@@ -4,6 +4,7 @@
 
 import time
 import hashlib
+import json
 import re
 import os
 import uuid
@@ -77,10 +78,12 @@ _redis_client = None
 
 
 def _redis_key(suffix: str) -> str:
+    """Return Redis key with configured prefix."""
     return f"{REDIS_PREFIX}:{suffix}"
 
 
 def get_redis_client():
+    """Return cached Redis client or None when unavailable."""
     global _redis_client
     if not REDIS_URL or redis is None:
         return None
@@ -99,6 +102,7 @@ def get_redis_client():
 # ==================== 数据库初始化 ====================
 
 def _ensure_index(cursor, table: str, index_name: str, columns: str) -> None:
+    """Ensure an index exists for the given table/columns."""
     if is_security_mysql():
         cursor.execute(
             """
@@ -206,6 +210,33 @@ def init_security_db():
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
+
+        # 查询历史记录
+        cursor.execute(f'''
+            CREATE TABLE IF NOT EXISTS query_history (
+                id {id_column},
+                username {username_type} NOT NULL,
+                query_type {action_type} NOT NULL,
+                parameters TEXT,
+                result_summary TEXT,
+                success INTEGER DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
+        # 查询收藏
+        cursor.execute(f'''
+            CREATE TABLE IF NOT EXISTS query_favorites (
+                id {id_column},
+                username {username_type} NOT NULL,
+                name TEXT NOT NULL,
+                query_type {action_type} NOT NULL,
+                parameters TEXT NOT NULL,
+                notes TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
     
         # 创建索引
         _ensure_index(cursor, "login_logs", "idx_login_logs_username", "username")
@@ -214,6 +245,10 @@ def init_security_db():
         _ensure_index(cursor, "data_history", "idx_data_history_record", "record_id")
         _ensure_index(cursor, "sessions", "idx_sessions_username", "username")
         _ensure_index(cursor, "user_accounts", "idx_user_accounts_username", "username")
+        _ensure_index(cursor, "query_history", "idx_query_history_username", "username")
+        _ensure_index(cursor, "query_history", "idx_query_history_type", "query_type")
+        _ensure_index(cursor, "query_history", "idx_query_history_created", "created_at")
+        _ensure_index(cursor, "query_favorites", "idx_query_favorites_username", "username")
 
         conn.commit()
     print("[Security] 安全数据库初始化完成")
@@ -635,6 +670,53 @@ def revoke_session(token: str) -> bool:
         return False
 
 
+def revoke_session_by_id(session_id: int, username: Optional[str] = None) -> bool:
+    """
+    按会话 ID 撤销会话（可选限制用户名）。
+
+    Args:
+        session_id: sessions 表的主键 ID
+        username: 若提供，仅允许撤销该用户的会话；为 None 时不限制
+
+    Returns:
+        是否撤销成功
+    """
+    try:
+        conn = open_security_connection(dict_cursor=True)
+        cursor = conn.cursor()
+        if username:
+            cursor.execute(
+                "SELECT id, token_hash FROM sessions WHERE id = ? AND username = ?",
+                (session_id, username),
+            )
+        else:
+            cursor.execute(
+                "SELECT id, token_hash FROM sessions WHERE id = ?",
+                (session_id,),
+            )
+        row = cursor.fetchone()
+        if not row:
+            conn.close()
+            return False
+
+        token_hash = row["token_hash"]
+        cursor.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+        conn.commit()
+        conn.close()
+
+        redis_client = get_redis_client()
+        if redis_client:
+            redis_client.delete(_redis_key(f"session:{token_hash}"))
+        else:
+            with _lock:
+                if token_hash in active_sessions:
+                    del active_sessions[token_hash]
+        return True
+    except Exception as e:
+        print(f"[Security] 按ID撤销会话失败: {e}")
+        return False
+
+
 def get_user_sessions(username: str) -> List[Dict]:
     """获取用户所有会话"""
     try:
@@ -879,6 +961,193 @@ def get_data_history(record_id: int = None, action: str = None, username: str = 
     except Exception as e:
         print(f"[Security] 获取数据历史失败: {e}")
         return []
+
+
+# ==================== 查询历史/收藏 ====================
+
+def _safe_json_dumps(data: Optional[Dict]) -> Optional[str]:
+    if data is None:
+        return None
+    try:
+        return json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+    except Exception:
+        return str(data)
+
+
+def _safe_json_loads(text: Optional[str]):
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except Exception:
+        return text
+
+
+def record_query_history(
+    username: str,
+    query_type: str,
+    parameters: Dict = None,
+    result_summary: Dict = None,
+    success: bool = True,
+) -> None:
+    """记录查询历史"""
+    if not username:
+        return
+    try:
+        conn = open_security_connection(dict_cursor=True)
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            INSERT INTO query_history (username, query_type, parameters, result_summary, success)
+            VALUES (?, ?, ?, ?, ?)
+            ''',
+            (
+                username,
+                query_type,
+                _safe_json_dumps(parameters),
+                _safe_json_dumps(result_summary),
+                1 if success else 0,
+            ),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"[Security] 记录查询历史失败: {e}")
+
+
+def get_query_history(
+    username: str,
+    query_type: str = None,
+    success: Optional[bool] = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> Tuple[List[Dict], int]:
+    """获取查询历史"""
+    try:
+        conn = open_security_connection(dict_cursor=True)
+        cursor = conn.cursor()
+
+        where_clauses = ["username = ?"]
+        params = [username]
+
+        if query_type:
+            where_clauses.append("query_type = ?")
+            params.append(query_type)
+        if success is not None:
+            where_clauses.append("success = ?")
+            params.append(1 if success else 0)
+
+        where_clause = " AND ".join(where_clauses)
+
+        count_query = f"SELECT COUNT(*) as count FROM query_history WHERE {where_clause}"
+        cursor.execute(count_query, params)
+        total = cursor.fetchone()["count"]
+
+        data_query = f'''
+            SELECT id, username, query_type, parameters, result_summary, success, created_at
+            FROM query_history WHERE {where_clause}
+            ORDER BY created_at DESC LIMIT ? OFFSET ?
+        '''
+        cursor.execute(data_query, params + [limit, offset])
+        rows = cursor.fetchall()
+        conn.close()
+
+        items = [{
+            "id": r["id"],
+            "username": r["username"],
+            "query_type": r["query_type"],
+            "parameters": _safe_json_loads(r["parameters"]),
+            "result_summary": _safe_json_loads(r["result_summary"]),
+            "success": bool(r["success"]),
+            "created_at": r["created_at"],
+        } for r in rows]
+
+        return items, total
+    except Exception as e:
+        print(f"[Security] 获取查询历史失败: {e}")
+        return [], 0
+
+
+def add_query_favorite(
+    username: str,
+    name: str,
+    query_type: str,
+    parameters: Dict,
+    notes: str = None,
+) -> Optional[int]:
+    """添加查询收藏"""
+    try:
+        conn = open_security_connection(dict_cursor=True)
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            INSERT INTO query_favorites (username, name, query_type, parameters, notes)
+            VALUES (?, ?, ?, ?, ?)
+            ''',
+            (
+                username,
+                name,
+                query_type,
+                _safe_json_dumps(parameters),
+                notes,
+            ),
+        )
+        conn.commit()
+        favorite_id = cursor.lastrowid
+        conn.close()
+        return favorite_id
+    except Exception as e:
+        print(f"[Security] 添加查询收藏失败: {e}")
+        return None
+
+
+def list_query_favorites(username: str) -> List[Dict]:
+    """列出查询收藏"""
+    try:
+        conn = open_security_connection(dict_cursor=True)
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT id, name, query_type, parameters, notes, created_at, updated_at
+            FROM query_favorites WHERE username = ?
+            ORDER BY updated_at DESC, created_at DESC
+            ''',
+            (username,),
+        )
+        rows = cursor.fetchall()
+        conn.close()
+        return [{
+            "id": r["id"],
+            "name": r["name"],
+            "query_type": r["query_type"],
+            "parameters": _safe_json_loads(r["parameters"]),
+            "notes": r["notes"],
+            "created_at": r["created_at"],
+            "updated_at": r["updated_at"],
+        } for r in rows]
+    except Exception as e:
+        print(f"[Security] 获取查询收藏失败: {e}")
+        return []
+
+
+def delete_query_favorite(username: str, favorite_id: int) -> bool:
+    """删除查询收藏"""
+    try:
+        conn = open_security_connection(dict_cursor=True)
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            DELETE FROM query_favorites WHERE id = ? AND username = ?
+            ''',
+            (favorite_id, username),
+        )
+        conn.commit()
+        deleted = cursor.rowcount > 0
+        conn.close()
+        return deleted
+    except Exception as e:
+        print(f"[Security] 删除查询收藏失败: {e}")
+        return False
 
 
 # ==================== 初始化 ====================
