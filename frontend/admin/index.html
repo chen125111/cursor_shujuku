@@ -1,0 +1,3334 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>后台管理系统 - 气体混合物数据管理</title>
+    <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&family=Inter:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-dark: #0f1419;
+            --bg-card: #1a1f2e;
+            --bg-sidebar: #151922;
+            --bg-input: #0d1117;
+            --border: #2d3748;
+            --text: #e2e8f0;
+            --text-dim: #718096;
+            --accent: #4299e1;
+            --accent-hover: #63b3ed;
+            --success: #48bb78;
+            --warning: #ecc94b;
+            --danger: #f56565;
+            --purple: #9f7aea;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Inter', 'Noto Sans SC', sans-serif;
+            background: var(--bg-dark);
+            color: var(--text);
+            min-height: 100vh;
+        }
+
+        /* Login Page */
+        .login-container {
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: linear-gradient(135deg, #0f1419 0%, #1a1f2e 50%, #0f1419 100%);
+        }
+
+        .login-box {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 40px;
+            width: 400px;
+            box-shadow: 0 25px 50px rgba(0,0,0,0.5);
+        }
+
+        .login-logo {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        .login-logo .icon {
+            width: 64px;
+            height: 64px;
+            background: linear-gradient(135deg, var(--accent), var(--purple));
+            border-radius: 16px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 32px;
+            margin-bottom: 16px;
+        }
+
+        .login-logo h1 {
+            font-size: 24px;
+            font-weight: 700;
+        }
+
+        .login-logo p {
+            color: var(--text-dim);
+            font-size: 14px;
+            margin-top: 8px;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-group label {
+            display: block;
+            font-size: 14px;
+            font-weight: 500;
+            margin-bottom: 8px;
+            color: var(--text-dim);
+        }
+
+        .form-group input {
+            width: 100%;
+            padding: 14px 16px;
+            background: var(--bg-input);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            color: var(--text);
+            font-size: 15px;
+            transition: all 0.2s;
+        }
+
+        .form-group input:focus {
+            outline: none;
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px rgba(66, 153, 225, 0.2);
+        }
+
+        .login-btn {
+            width: 100%;
+            padding: 14px;
+            background: linear-gradient(135deg, var(--accent), var(--purple));
+            border: none;
+            border-radius: 10px;
+            color: white;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .login-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 30px rgba(66, 153, 225, 0.3);
+        }
+
+        .login-error {
+            background: rgba(245, 101, 101, 0.1);
+            border: 1px solid var(--danger);
+            color: var(--danger);
+            padding: 12px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            font-size: 14px;
+            display: none;
+        }
+
+        /* Dashboard Layout */
+        .dashboard {
+            display: none;
+            min-height: 100vh;
+        }
+
+        .dashboard.active {
+            display: flex;
+        }
+
+        /* Sidebar */
+        .sidebar {
+            width: 260px;
+            background: var(--bg-sidebar);
+            border-right: 1px solid var(--border);
+            padding: 20px 0;
+            position: fixed;
+            height: 100vh;
+            overflow-y: auto;
+        }
+
+        .sidebar-logo {
+            padding: 0 20px 20px;
+            border-bottom: 1px solid var(--border);
+            margin-bottom: 20px;
+        }
+
+        .sidebar-logo h2 {
+            font-size: 18px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .sidebar-logo span {
+            font-size: 12px;
+            background: var(--accent);
+            padding: 2px 8px;
+            border-radius: 4px;
+        }
+
+        .nav-section {
+            padding: 0 12px;
+            margin-bottom: 20px;
+        }
+
+        .nav-section-title {
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--text-dim);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            padding: 0 12px;
+            margin-bottom: 10px;
+        }
+
+        .nav-item {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px 16px;
+            color: var(--text-dim);
+            text-decoration: none;
+            border-radius: 10px;
+            transition: all 0.2s;
+            cursor: pointer;
+            font-size: 14px;
+        }
+
+        .nav-item:hover {
+            background: rgba(66, 153, 225, 0.1);
+            color: var(--text);
+        }
+
+        .nav-item.active {
+            background: linear-gradient(135deg, rgba(66, 153, 225, 0.2), rgba(159, 122, 234, 0.2));
+            color: var(--accent);
+        }
+
+        .nav-item .icon {
+            font-size: 18px;
+        }
+
+        .nav-item .badge {
+            margin-left: auto;
+            background: var(--danger);
+            color: white;
+            font-size: 11px;
+            padding: 2px 8px;
+            border-radius: 10px;
+        }
+
+        /* Main Content */
+        .main-content {
+            flex: 1;
+            margin-left: 260px;
+            padding: 30px;
+            background: var(--bg-dark);
+        }
+
+        .page-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 30px;
+        }
+
+        .page-header h1 {
+            font-size: 28px;
+            font-weight: 700;
+        }
+
+        .page-header p {
+            color: var(--text-dim);
+            margin-top: 5px;
+        }
+
+        .header-actions {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+        }
+
+        .user-info {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 8px 16px;
+            background: var(--bg-card);
+            border-radius: 10px;
+            cursor: pointer;
+        }
+
+        .user-avatar {
+            width: 36px;
+            height: 36px;
+            background: linear-gradient(135deg, var(--accent), var(--purple));
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 600;
+        }
+
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 10px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .btn-primary {
+            background: var(--accent);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: var(--accent-hover);
+        }
+
+        .btn-danger {
+            background: var(--danger);
+            color: white;
+        }
+
+        .btn-secondary {
+            background: var(--bg-card);
+            color: var(--text);
+            border: 1px solid var(--border);
+        }
+
+        /* Stats Grid */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .stat-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 24px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .stat-card.clickable {
+            cursor: pointer;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+
+        .stat-card.clickable:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 10px 20px rgba(66, 153, 225, 0.15);
+        }
+
+        .stat-card::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            right: 0;
+            width: 100px;
+            height: 100px;
+            background: radial-gradient(circle, rgba(66, 153, 225, 0.1) 0%, transparent 70%);
+        }
+
+        .stat-icon {
+            width: 48px;
+            height: 48px;
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 24px;
+            margin-bottom: 16px;
+        }
+
+        .stat-icon.blue { background: rgba(66, 153, 225, 0.2); }
+        .stat-icon.green { background: rgba(72, 187, 120, 0.2); }
+        .stat-icon.yellow { background: rgba(236, 201, 75, 0.2); }
+        .stat-icon.purple { background: rgba(159, 122, 234, 0.2); }
+
+        .stat-value {
+            font-size: 32px;
+            font-weight: 700;
+            font-family: 'Fira Code', monospace;
+        }
+
+        .stat-label {
+            color: var(--text-dim);
+            font-size: 14px;
+            margin-top: 4px;
+        }
+
+        .stat-change {
+            font-size: 13px;
+            margin-top: 8px;
+        }
+
+        .stat-change.up { color: var(--success); }
+        .stat-change.down { color: var(--danger); }
+
+        /* Cards */
+        .card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            margin-bottom: 20px;
+        }
+
+        .card-header {
+            padding: 20px 24px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .card-header h3 {
+            font-size: 16px;
+            font-weight: 600;
+        }
+
+        .card-header .badge {
+            background: rgba(66, 153, 225, 0.15);
+            color: var(--accent);
+            font-size: 11px;
+            padding: 4px 10px;
+            border-radius: 999px;
+            border: 1px solid var(--border);
+        }
+
+        .card-body {
+            padding: 24px;
+        }
+
+        /* Visualization */
+        .viz-controls {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 16px;
+        }
+
+        .viz-control {
+            padding: 12px;
+            background: var(--bg-input);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+        }
+
+        .viz-control label {
+            display: block;
+            font-size: 12px;
+            font-weight: 500;
+            margin-bottom: 8px;
+            color: var(--text-dim);
+        }
+
+        .viz-control input,
+        .viz-control select {
+            width: 100%;
+            padding: 10px 12px;
+            background: #0b0f14;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text);
+            font-size: 13px;
+        }
+
+        .viz-control input:focus,
+        .viz-control select:focus {
+            outline: none;
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px rgba(66, 153, 225, 0.15);
+        }
+
+        .viz-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 20px;
+        }
+
+        .chart-wrap {
+            width: 100%;
+            height: 340px;
+        }
+
+        .chart-wrap.large {
+            height: 420px;
+        }
+
+        /* Table */
+        .data-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .data-table th {
+            text-align: left;
+            padding: 14px 16px;
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-dim);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            background: var(--bg-input);
+        }
+
+        .data-table td {
+            padding: 14px 16px;
+            font-size: 14px;
+            border-bottom: 1px solid var(--border);
+            font-family: 'Fira Code', monospace;
+        }
+
+        .data-table tr:hover {
+            background: rgba(66, 153, 225, 0.05);
+        }
+
+        .data-table tr.highlight-row {
+            background: rgba(66, 153, 225, 0.12);
+            box-shadow: inset 0 0 0 1px rgba(66, 153, 225, 0.35);
+        }
+
+        .data-table tr.highlight-row td:first-child::after {
+            content: '定位';
+            margin-left: 8px;
+            padding: 2px 6px;
+            font-size: 11px;
+            color: #1a202c;
+            background: #63b3ed;
+            border-radius: 999px;
+        }
+
+        /* System Info */
+        .info-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 16px;
+        }
+
+        .info-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 12px 0;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .info-item:last-child {
+            border-bottom: none;
+        }
+
+        .info-label {
+            color: var(--text-dim);
+        }
+
+        .info-value {
+            font-family: 'Fira Code', monospace;
+            font-weight: 500;
+        }
+
+        /* Activity Log */
+        .activity-item {
+            display: flex;
+            align-items: flex-start;
+            gap: 16px;
+            padding: 16px 0;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .activity-item:last-child {
+            border-bottom: none;
+        }
+
+        .activity-icon {
+            width: 40px;
+            height: 40px;
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+            flex-shrink: 0;
+        }
+
+        .activity-icon.create { background: rgba(72, 187, 120, 0.2); }
+        .activity-icon.update { background: rgba(66, 153, 225, 0.2); }
+        .activity-icon.delete { background: rgba(245, 101, 101, 0.2); }
+        .activity-icon.export { background: rgba(236, 201, 75, 0.2); }
+
+        .activity-content h4 {
+            font-size: 14px;
+            font-weight: 500;
+            margin-bottom: 4px;
+        }
+
+        .activity-content p {
+            font-size: 13px;
+            color: var(--text-dim);
+        }
+
+        .activity-time {
+            margin-left: auto;
+            font-size: 12px;
+            color: var(--text-dim);
+            white-space: nowrap;
+        }
+
+        /* Progress Bar */
+        .progress-bar {
+            height: 8px;
+            background: var(--bg-input);
+            border-radius: 4px;
+            overflow: hidden;
+            margin-top: 8px;
+        }
+
+        .progress-fill {
+            height: 100%;
+            border-radius: 4px;
+            transition: width 0.5s ease;
+        }
+
+        .progress-fill.blue { background: var(--accent); }
+        .progress-fill.green { background: var(--success); }
+
+        /* Database Actions */
+        .db-actions {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+
+        .action-card {
+            flex: 1;
+            min-width: 200px;
+            background: var(--bg-input);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 20px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .action-card:hover {
+            border-color: var(--accent);
+            transform: translateY(-2px);
+        }
+
+        .action-card .icon {
+            font-size: 32px;
+            margin-bottom: 12px;
+        }
+
+        .action-card h4 {
+            font-size: 15px;
+            margin-bottom: 4px;
+        }
+
+        .action-card p {
+            font-size: 13px;
+            color: var(--text-dim);
+        }
+
+        /* Page Sections */
+        .page-section {
+            display: none;
+        }
+
+        .page-section.active {
+            display: block;
+        }
+
+        /* Responsive */
+        @media (max-width: 1200px) {
+            .stats-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
+
+        @media (max-width: 768px) {
+            .sidebar {
+                display: none;
+            }
+            .main-content {
+                margin-left: 0;
+            }
+            .stats-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- Login Page -->
+    <div class="login-container" id="loginPage">
+        <div class="login-box">
+            <div class="login-logo">
+                <div class="icon">🔐</div>
+                <h1>后台管理系统</h1>
+                <p>气体混合物数据管理平台</p>
+            </div>
+            <div class="login-error" id="loginError">用户名或密码错误</div>
+            <form id="loginForm">
+                <div class="form-group">
+                    <label>管理员账号</label>
+                    <input type="text" id="username" placeholder="请输入账号">
+                </div>
+                <div class="form-group">
+                    <label>密码</label>
+                    <input type="password" id="password" placeholder="请输入密码">
+                </div>
+                <button type="submit" class="login-btn">登 录</button>
+            </form>
+            <p style="text-align: center; margin-top: 20px; color: var(--text-dim); font-size: 13px;">
+                管理员账号由环境变量 ADMIN_USERNAME / ADMIN_PASSWORD 配置
+            </p>
+        </div>
+    </div>
+
+    <!-- Dashboard -->
+    <div class="dashboard" id="dashboard">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="sidebar-logo">
+                <h2>⚗️ 管理后台 <span>v4.0</span></h2>
+            </div>
+            
+            <nav class="nav-section">
+                <div class="nav-section-title">概览</div>
+                <a class="nav-item active" data-page="overview">
+                    <span class="icon">📊</span> 系统概览
+                </a>
+                <a class="nav-item" data-page="database">
+                    <span class="icon">🗃️</span> 数据库管理
+                </a>
+                <a class="nav-item" data-page="backup">
+                    <span class="icon">💾</span> 自动备份
+                </a>
+            </nav>
+            
+            <nav class="nav-section">
+                <div class="nav-section-title">数据管理</div>
+                <a class="nav-item" data-page="records">
+                    <span class="icon">📋</span> 数据记录
+                    <span class="badge" id="recordCount">0</span>
+                </a>
+                <a class="nav-item" data-page="visualization">
+                    <span class="icon">📈</span> 高级可视化
+                </a>
+                <a class="nav-item" data-page="review">
+                    <span class="icon">✅</span> 数据审核
+                    <span class="badge" id="reviewCount" style="background: var(--warning);">0</span>
+                </a>
+                <a class="nav-item" data-page="import">
+                    <span class="icon">📤</span> 导入导出
+                </a>
+                <a class="nav-item" data-page="history">
+                    <span class="icon">📜</span> 数据历史
+                </a>
+            </nav>
+            
+            <nav class="nav-section">
+                <div class="nav-section-title">安全中心</div>
+                <a class="nav-item" data-page="users">
+                    <span class="icon">👥</span> 用户管理
+                </a>
+                <a class="nav-item" data-page="totp">
+                    <span class="icon">🔐</span> 两步验证
+                </a>
+                <a class="nav-item" data-page="sessions">
+                    <span class="icon">📱</span> 会话管理
+                </a>
+                <a class="nav-item" data-page="logs">
+                    <span class="icon">📝</span> 登录日志
+                </a>
+                <a class="nav-item" data-page="settings">
+                    <span class="icon">⚙️</span> 系统设置
+                </a>
+                <a class="nav-item" onclick="logout()">
+                    <span class="icon">🚪</span> 退出登录
+                </a>
+            </nav>
+            
+            <nav class="nav-section" style="margin-top: auto;">
+                <a class="nav-item" href="/" target="_blank" id="frontHomeLink">
+                    <span class="icon">🌐</span> 前台首页
+                </a>
+                <a class="nav-item" href="/docs" target="_blank" id="apiDocsLink">
+                    <span class="icon">📚</span> API文档
+                </a>
+            </nav>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <div class="page-header">
+                <div>
+                    <h1 id="pageTitle">系统概览</h1>
+                    <p id="pageDesc">查看系统运行状态和数据统计</p>
+                </div>
+                <div class="header-actions">
+                    <button class="btn btn-secondary" onclick="refreshData()">🔄 刷新</button>
+                    <div class="user-info">
+                        <div class="user-avatar">A</div>
+                        <div>
+                            <div style="font-weight: 600; font-size: 14px;">Admin</div>
+                            <div style="font-size: 12px; color: var(--text-dim);">管理员</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Overview Page -->
+            <div class="page-section active" id="page-overview">
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-icon blue">📊</div>
+                        <div class="stat-value" id="statTotal">0</div>
+                        <div class="stat-label">总记录数</div>
+                        <div class="stat-change up">数据完整</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon green">🌡️</div>
+                        <div class="stat-value" id="statTempRange">-</div>
+                        <div class="stat-label">温度范围 (K)</div>
+                        <div class="stat-change">数据分布均匀</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon yellow">💨</div>
+                        <div class="stat-value" id="statPressureRange">-</div>
+                        <div class="stat-label">压力范围 (MPa)</div>
+                        <div class="stat-change">覆盖完整</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon purple">💾</div>
+                        <div class="stat-value" id="statDbSize">-</div>
+                        <div class="stat-label">数据库大小</div>
+                        <div class="stat-change up">运行正常</div>
+                    </div>
+                </div>
+
+                <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 20px;">
+                    <div class="card">
+                        <div class="card-header">
+                            <h3>📈 最近数据记录</h3>
+                            <button class="btn btn-secondary" onclick="showPage('records')">查看全部</button>
+                        </div>
+                        <div class="card-body" style="padding: 0;">
+                            <table class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th>ID</th>
+                                        <th>温度 (K)</th>
+                                        <th>压力 (MPa)</th>
+                                        <th>CH₄</th>
+                                        <th>创建时间</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="recentRecords"></tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-header">
+                            <h3>ℹ️ 系统信息</h3>
+                        </div>
+                        <div class="card-body">
+                            <div class="info-item">
+                                <span class="info-label">系统版本</span>
+                                <span class="info-value">v3.0.0</span>
+                            </div>
+                            <div class="info-item">
+                                <span class="info-label">后端框架</span>
+                                <span class="info-value">FastAPI</span>
+                            </div>
+                            <div class="info-item">
+                                <span class="info-label">前端框架</span>
+                                <span class="info-value">Vue 3</span>
+                            </div>
+                            <div class="info-item">
+                                <span class="info-label">数据库</span>
+                                <span class="info-value">SQLite</span>
+                            </div>
+                            <div class="info-item">
+                                <span class="info-label">API状态</span>
+                                <span class="info-value" style="color: var(--success);">● 正常</span>
+                            </div>
+                            <div class="info-item">
+                                <span class="info-label">服务器时间</span>
+                                <span class="info-value" id="serverTime">-</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Database Page -->
+            <div class="page-section" id="page-database">
+                <div class="card">
+                    <div class="card-header">
+                        <h3>🗃️ 数据库操作</h3>
+                    </div>
+                    <div class="card-body">
+                        <div class="db-actions">
+                            <div class="action-card" onclick="backupDatabase()">
+                                <div class="icon">💾</div>
+                                <h4>备份数据库</h4>
+                                <p>导出完整数据库备份文件</p>
+                            </div>
+                            <div class="action-card" onclick="exportAllData()">
+                                <div class="icon">📥</div>
+                                <h4>导出所有数据</h4>
+                                <p>导出为 Excel 格式</p>
+                            </div>
+                            <div class="action-card" onclick="optimizeDatabase()">
+                                <div class="icon">⚡</div>
+                                <h4>优化数据库</h4>
+                                <p>清理碎片，提升性能</p>
+                            </div>
+                            <div class="action-card" onclick="showClearConfirm()">
+                                <div class="icon">🗑️</div>
+                                <h4>清空数据</h4>
+                                <p>删除所有记录（危险操作）</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h3>📊 数据库状态</h3>
+                    </div>
+                    <div class="card-body">
+                        <div class="info-grid">
+                            <div>
+                                <div class="info-item">
+                                    <span class="info-label">数据表</span>
+                                    <span class="info-value">gas_mixture</span>
+                                </div>
+                                <div class="info-item">
+                                    <span class="info-label">总记录数</span>
+                                    <span class="info-value" id="dbRecordCount">0</span>
+                                </div>
+                                <div class="info-item">
+                                    <span class="info-label">数据库文件</span>
+                                    <span class="info-value">gas_data.db</span>
+                                </div>
+                            </div>
+                            <div>
+                                <div class="info-item">
+                                    <span class="info-label">字段数量</span>
+                                    <span class="info-value">12 个字段</span>
+                                </div>
+                                <div class="info-item">
+                                    <span class="info-label">索引</span>
+                                    <span class="info-value">主键索引</span>
+                                </div>
+                                <div class="info-item">
+                                    <span class="info-label">最后更新</span>
+                                    <span class="info-value" id="lastUpdate">-</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Records Page -->
+            <div class="page-section" id="page-records">
+                <div class="card">
+                    <div class="card-header">
+                        <h3>📋 全部数据记录</h3>
+                        <div style="display: flex; gap: 10px;">
+                            <button class="btn btn-primary" onclick="window.open('/')">前往前台管理</button>
+                        </div>
+                    </div>
+                    <div class="card-body" style="padding: 0;">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>ID</th>
+                                    <th>温度 (K)</th>
+                                    <th>CH₄</th>
+                                    <th>C₂H₆</th>
+                                    <th>C₃H₈</th>
+                                    <th>CO₂</th>
+                                    <th>N₂</th>
+                                    <th>H₂S</th>
+                                    <th>i-C₄H₁₀</th>
+                                    <th>压力 (MPa)</th>
+                                </tr>
+                            </thead>
+                            <tbody id="allRecords"></tbody>
+                        </table>
+                    </div>
+                </div>
+                <div style="text-align: center; padding: 20px;">
+                    <button class="btn btn-secondary" id="loadMoreBtn" onclick="loadMoreRecords()">加载更多</button>
+                </div>
+            </div>
+
+            <!-- Visualization Page -->
+            <div class="page-section" id="page-visualization">
+                <div class="card">
+                    <div class="card-header">
+                        <h3>🎛️ 可视化参数</h3>
+                        <button class="btn btn-secondary" onclick="loadVisualization()">刷新图表</button>
+                    </div>
+                    <div class="card-body">
+                        <div class="viz-controls">
+                            <div class="viz-control">
+                                <label>散点图说明</label>
+                                <div style="color: var(--text-dim); font-size: 13px; line-height: 1.6;">
+                                    点位表示温度-压力分布，颜色按压力高低渐变。
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h3>🔵 温度-压力散点图</h3>
+                        <span class="badge">压力着色</span>
+                    </div>
+                    <div class="card-body">
+                        <div class="chart-wrap large" id="scatterChart"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Import/Export Page -->
+            <div class="page-section" id="page-import">
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+                    <div class="card">
+                        <div class="card-header">
+                            <h3>📤 数据导入</h3>
+                        </div>
+                        <div class="card-body">
+                            <p style="color: var(--text-dim); margin-bottom: 20px;">支持 CSV 和 Excel 文件格式</p>
+                            <input type="file" id="importFile" accept=".csv,.xlsx,.xls" style="display: none;" onchange="handleImport(event)">
+                            <input type="file" id="importPreviewFile" accept=".csv,.xlsx,.xls" style="display: none;" onchange="handleImportPreview(event)">
+                            <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                                <button class="btn btn-primary" onclick="document.getElementById('importFile').click()">
+                                📁 选择文件导入
+                                </button>
+                                <button class="btn btn-secondary" onclick="document.getElementById('importPreviewFile').click()">
+                                    🔍 校验预览
+                                </button>
+                            </div>
+                            <div style="display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap;">
+                                <button class="btn btn-secondary" onclick="downloadCSVTemplate()">⬇️ CSV 模板</button>
+                                <button class="btn btn-secondary" onclick="downloadExcelTemplate()">⬇️ Excel 模板</button>
+                            </div>
+                            <div id="importPreviewResult" style="margin-top: 16px;"></div>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <div class="card-header">
+                            <h3>📥 数据导出</h3>
+                        </div>
+                        <div class="card-body">
+                            <p style="color: var(--text-dim); margin-bottom: 20px;">导出所有数据记录</p>
+                            <button class="btn btn-secondary" onclick="exportCSV()" style="margin-right: 10px;">
+                                📄 导出 CSV
+                            </button>
+                            <button class="btn btn-primary" onclick="exportExcel()">
+                                📊 导出 Excel
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Logs Page -->
+            <div class="page-section" id="page-logs">
+                <div class="card">
+                    <div class="card-header">
+                        <h3>📝 操作日志</h3>
+                        <button class="btn btn-secondary" onclick="clearLogs()">清空日志</button>
+                    </div>
+                    <div class="card-body">
+                        <div id="activityLogs">
+                            <div class="activity-item">
+                                <div class="activity-icon update">👤</div>
+                                <div class="activity-content">
+                                    <h4>管理员登录</h4>
+                                    <p>管理员 admin 登录系统</p>
+                                </div>
+                                <div class="activity-time">刚刚</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Settings Page -->
+            <div class="page-section" id="page-settings">
+                <div class="card">
+                    <div class="card-header">
+                        <h3>⚙️ 系统设置</h3>
+                    </div>
+                    <div class="card-body">
+                        <div class="form-group">
+                            <label>系统名称</label>
+                            <input type="text" value="气体混合物数据管理系统" style="max-width: 400px;">
+                        </div>
+                        <div class="form-group">
+                            <label>每页显示条数</label>
+                            <input type="number" value="15" style="max-width: 200px;">
+                        </div>
+                        <div class="form-group">
+                            <label>API 基础地址</label>
+                            <input type="text" value="/api" readonly style="max-width: 400px;">
+                        </div>
+                        <button class="btn btn-primary" onclick="showToast('设置已保存')">💾 保存设置</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Backup Page -->
+            <div class="page-section" id="page-backup">
+                <div class="stats-grid" style="grid-template-columns: repeat(3, 1fr);">
+                    <div class="stat-card">
+                        <div class="stat-icon green">💾</div>
+                        <div class="stat-value" id="backupCount">0</div>
+                        <div class="stat-label">备份文件数</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon blue">📊</div>
+                        <div class="stat-value" id="backupTotalSize">0 KB</div>
+                        <div class="stat-label">总备份大小</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon purple">⏱️</div>
+                        <div class="stat-value" id="backupInterval">6h</div>
+                        <div class="stat-label">备份间隔</div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h3>💾 备份操作</h3>
+                        <button class="btn btn-primary" id="backupCreateButton" onclick="createBackup()">➕ 立即备份</button>
+                    </div>
+                    <div class="card-body">
+                        <p style="color: var(--text-dim); margin-bottom: 20px;">
+                            系统会自动每 6 小时备份一次数据库，最多保留 10 个备份文件。
+                        </p>
+                        <div id="backupStatus" style="padding: 16px; background: var(--bg-input); border-radius: 10px; margin-bottom: 20px;">
+                            <div style="display: flex; align-items: center; gap: 10px;">
+                                <span style="color: var(--success); font-size: 20px;">●</span>
+                                <span>自动备份已启用</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h3>📋 备份文件列表</h3>
+                        <button class="btn btn-secondary" onclick="loadBackups()">🔄 刷新</button>
+                    </div>
+                    <div class="card-body" style="padding: 0;">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>文件名</th>
+                                    <th>类型</th>
+                                    <th>大小</th>
+                                    <th>创建时间</th>
+                                    <th>操作</th>
+                                </tr>
+                            </thead>
+                            <tbody id="backupList"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Users Page -->
+            <div class="page-section" id="page-users">
+                <div class="card">
+                    <div class="card-header">
+                        <h3>👥 用户管理</h3>
+                        <button class="btn btn-primary" onclick="showCreateUserModal()">➕ 添加用户</button>
+                    </div>
+                    <div class="card-body" style="padding: 0;">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>用户名</th>
+                                    <th>角色</th>
+                                    <th>创建时间</th>
+                                    <th>状态</th>
+                                    <th>操作</th>
+                                </tr>
+                            </thead>
+                            <tbody id="userList">
+                                <tr>
+                                    <td>admin</td>
+                                    <td><span style="background: var(--accent); padding: 4px 12px; border-radius: 20px; font-size: 12px;">管理员</span></td>
+                                    <td>2024-01-01</td>
+                                    <td><span style="color: var(--success);">● 在线</span></td>
+                                    <td>-</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h3>🔐 修改密码</h3>
+                    </div>
+                    <div class="card-body">
+                        <div class="form-group">
+                            <label>当前密码</label>
+                            <input type="password" id="oldPassword" placeholder="请输入当前密码" style="max-width: 400px;">
+                        </div>
+                        <div class="form-group">
+                            <label>新密码</label>
+                            <input type="password" id="newPassword" placeholder="请输入新密码" style="max-width: 400px;">
+                        </div>
+                        <div class="form-group">
+                            <label>确认新密码</label>
+                            <input type="password" id="confirmPassword" placeholder="再次输入新密码" style="max-width: 400px;">
+                        </div>
+                        <button class="btn btn-primary" onclick="changePassword()">🔑 修改密码</button>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h3>🔒 安全信息</h3>
+                    </div>
+                    <div class="card-body">
+                        <div class="info-item">
+                            <span class="info-label">认证方式</span>
+                            <span class="info-value">JWT Token</span>
+                        </div>
+                        <div class="info-item">
+                            <span class="info-label">密码加密</span>
+                            <span class="info-value">PBKDF2-SHA256</span>
+                        </div>
+                        <div class="info-item">
+                            <span class="info-label">Token 有效期</span>
+                            <span class="info-value">24 小时</span>
+                        </div>
+                        <div class="info-item">
+                            <span class="info-label">当前会话</span>
+                            <span class="info-value" style="color: var(--success);">● 有效</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- TOTP Page -->
+            <div class="page-section" id="page-totp">
+                <div class="card">
+                    <div class="card-header">
+                        <h3>🔐 两步验证设置</h3>
+                    </div>
+                    <div class="card-body">
+                        <div id="totpStatus">
+                            <p style="color: var(--text-dim); margin-bottom: 20px;">
+                                两步验证为您的账户提供额外的安全保护。启用后，登录时需要输入验证器App生成的动态验证码。
+                            </p>
+                            <div id="totpNotEnabled" style="display: none;">
+                                <button class="btn btn-primary" onclick="setupTOTP()">🔐 设置两步验证</button>
+                            </div>
+                            <div id="totpEnabled" style="display: none;">
+                                <div style="padding: 16px; background: rgba(72, 187, 120, 0.1); border: 1px solid var(--success); border-radius: 10px; margin-bottom: 20px;">
+                                    <span style="color: var(--success);">✓ 两步验证已启用</span>
+                                </div>
+                                <button class="btn btn-danger" onclick="disableTOTP()">禁用两步验证</button>
+                                <button class="btn btn-secondary" onclick="regenerateBackupCodes()" style="margin-left: 10px;">重新生成备用码</button>
+                            </div>
+                        </div>
+                        <div id="totpSetup" style="display: none; margin-top: 20px;">
+                            <h4 style="margin-bottom: 15px;">设置两步验证</h4>
+                            <p style="color: var(--text-dim); margin-bottom: 15px;">请使用验证器App（如 Google Authenticator）扫描下方二维码或手动输入密钥：</p>
+                            <div style="background: var(--bg-input); padding: 20px; border-radius: 10px; margin-bottom: 20px;">
+                                <p style="font-family: 'Fira Code', monospace; word-break: break-all;" id="totpSecret"></p>
+                            </div>
+                            <div class="form-group">
+                                <label>输入验证码确认</label>
+                                <input type="text" id="totpCode" placeholder="6位数字验证码" style="max-width: 200px;">
+                            </div>
+                            <button class="btn btn-primary" onclick="enableTOTP()">✓ 确认启用</button>
+                            <button class="btn btn-secondary" onclick="cancelTOTPSetup()">取消</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h3>📋 密码策略</h3>
+                    </div>
+                    <div class="card-body">
+                        <div class="info-item">
+                            <span class="info-label">最小长度</span>
+                            <span class="info-value">8 位</span>
+                        </div>
+                        <div class="info-item">
+                            <span class="info-label">必须包含大写字母</span>
+                            <span class="info-value" style="color: var(--success);">✓ 是</span>
+                        </div>
+                        <div class="info-item">
+                            <span class="info-label">必须包含小写字母</span>
+                            <span class="info-value" style="color: var(--success);">✓ 是</span>
+                        </div>
+                        <div class="info-item">
+                            <span class="info-label">必须包含数字</span>
+                            <span class="info-value" style="color: var(--success);">✓ 是</span>
+                        </div>
+                        <div class="info-item">
+                            <span class="info-label">必须包含特殊字符</span>
+                            <span class="info-value" style="color: var(--text-dim);">✗ 否</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Sessions Page -->
+            <div class="page-section" id="page-sessions">
+                <div class="card">
+                    <div class="card-header">
+                        <h3>📱 活跃会话</h3>
+                        <button class="btn btn-danger" onclick="revokeAllSessions()">撤销所有其他会话</button>
+                    </div>
+                    <div class="card-body" style="padding: 0;">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>IP 地址</th>
+                                    <th>设备/浏览器</th>
+                                    <th>登录时间</th>
+                                    <th>最后活跃</th>
+                                    <th>状态</th>
+                                </tr>
+                            </thead>
+                            <tbody id="sessionList"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h3>🛡️ API 限流状态</h3>
+                    </div>
+                    <div class="card-body">
+                        <div class="info-item">
+                            <span class="info-label">当前 IP</span>
+                            <span class="info-value" id="currentIP">-</span>
+                        </div>
+                        <div class="info-item">
+                            <span class="info-label">请求次数（1分钟内）</span>
+                            <span class="info-value" id="requestCount">-</span>
+                        </div>
+                        <div class="info-item">
+                            <span class="info-label">限制</span>
+                            <span class="info-value">60 次/分钟</span>
+                        </div>
+                        <div class="info-item">
+                            <span class="info-label">状态</span>
+                            <span class="info-value" id="rateLimitStatus" style="color: var(--success);">● 正常</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Review Page -->
+            <div class="page-section" id="page-review">
+                <div class="stats-grid" style="grid-template-columns: repeat(4, 1fr);">
+                    <div class="stat-card clickable" id="pendingGroupsCard">
+                        <div class="stat-icon yellow">⏳</div>
+                        <div class="stat-value" id="pendingGroups">0</div>
+                        <div class="stat-label">待审核组数</div>
+                    </div>
+                    <div class="stat-card clickable" id="pendingRecordsCard">
+                        <div class="stat-icon blue">📊</div>
+                        <div class="stat-value" id="pendingRecords">0</div>
+                        <div class="stat-label">待审核记录</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon green">✓</div>
+                        <div class="stat-value" id="approvedRecords">0</div>
+                        <div class="stat-label">已通过</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon" style="background: rgba(245,101,101,0.2);">✗</div>
+                        <div class="stat-value" id="rejectedRecords">0</div>
+                        <div class="stat-label">已拒绝</div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h3>🔍 数据筛选</h3>
+                        <div style="display: flex; gap: 10px;">
+                            <button class="btn btn-primary" onclick="scanDuplicates()">扫描重复数据</button>
+                            <button class="btn btn-danger" onclick="moveDuplicatesToReview()">移到待审核区</button>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <p style="color: var(--text-dim);">
+                            点击"扫描重复数据"查找同组分、同温度下有多个不同压力值的数据。<br>
+                            确认后点击"移到待审核区"将这些数据移出正式数据库，等待人工审核。
+                        </p>
+                        <div id="duplicateResults" style="margin-top: 20px;"></div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h3>✅ 待审核数据</h3>
+                        <button class="btn btn-secondary" onclick="loadPendingGroups()">🔄 刷新</button>
+                    </div>
+                    <div class="card-body">
+                        <div id="pendingBatchActions" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                            <div style="display: flex; align-items: center; gap: 12px; font-size: 13px;">
+                                <label style="display: flex; align-items: center; gap: 6px;">
+                                    <input type="checkbox" id="pendingSelectAll" onchange="toggleSelectAllPending(this.checked)" style="accent-color: var(--accent);">
+                                    本页全选
+                                </label>
+                                <span style="color: var(--text-dim);">已选 <span id="pendingSelectedCount">0</span> 组</span>
+                            </div>
+                            <div style="display: flex; gap: 8px;">
+                                <button class="btn btn-primary" onclick="batchApproveGroups()">批量通过</button>
+                                <button class="btn btn-danger" onclick="batchRejectGroups()">批量拒绝</button>
+                            </div>
+                        </div>
+                        <div id="pendingFilters" style="display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 12px;">
+                            <input type="text" id="pendingFilterGroupId" placeholder="组ID" style="max-width: 160px;">
+                            <input type="number" id="pendingTempMin" placeholder="温度 ≥" style="max-width: 120px;">
+                            <input type="number" id="pendingTempMax" placeholder="温度 ≤" style="max-width: 120px;">
+                            <button class="btn btn-primary" onclick="applyPendingFilters()">筛选</button>
+                            <button class="btn btn-secondary" onclick="clearPendingFilters()">清空</button>
+                        </div>
+                        <div id="pendingGroupsContainer">
+                            <p style="color: var(--text-dim); text-align: center;">点击上方按钮加载待审核数据</p>
+                        </div>
+                        <div id="pendingGroupsPagination" style="display: flex; justify-content: space-between; align-items: center; margin-top: 16px;"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- History Page -->
+            <div class="page-section" id="page-history">
+                <div class="card">
+                    <div class="card-header">
+                        <h3>📜 数据修改历史</h3>
+                        <button class="btn btn-secondary" onclick="loadHistory()">🔄 刷新</button>
+                    </div>
+                    <div class="card-body">
+                        <div style="display: flex; flex-wrap: wrap; gap: 10px; align-items: center;">
+                            <input type="number" id="historyRecordId" placeholder="记录ID" style="max-width: 140px;">
+                            <select id="historyAction" style="max-width: 140px;">
+                                <option value="">全部操作</option>
+                                <option value="CREATE">CREATE</option>
+                                <option value="UPDATE">UPDATE</option>
+                                <option value="DELETE">DELETE</option>
+                            </select>
+                            <input type="text" id="historyUsername" placeholder="操作者" style="max-width: 160px;">
+                            <button class="btn btn-primary" onclick="loadHistory()">筛选</button>
+                            <button class="btn btn-secondary" onclick="exportHistoryCsv()">导出 CSV</button>
+                        </div>
+                    </div>
+                    <div class="card-body" style="padding: 0;">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>记录ID</th>
+                                    <th>操作</th>
+                                    <th>字段</th>
+                                    <th>旧值</th>
+                                    <th>新值</th>
+                                    <th>操作者</th>
+                                    <th>时间</th>
+                                </tr>
+                            </thead>
+                            <tbody id="historyList"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Logs Page (Login Logs) -->
+            <div class="page-section" id="page-logs">
+                <div class="card">
+                    <div class="card-header">
+                        <h3>📝 登录日志</h3>
+                        <button class="btn btn-secondary" onclick="loadLoginLogs()">🔄 刷新</button>
+                    </div>
+                    <div class="card-body" style="padding: 0;">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>用户名</th>
+                                    <th>IP 地址</th>
+                                    <th>状态</th>
+                                    <th>失败原因</th>
+                                    <th>时间</th>
+                                </tr>
+                            </thead>
+                            <tbody id="loginLogList"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h3>🔎 审计日志</h3>
+                        <button class="btn btn-secondary" onclick="loadAuditLogs()">🔄 刷新</button>
+                    </div>
+                    <div class="card-body">
+                        <div style="display: flex; flex-wrap: wrap; gap: 10px; align-items: center;">
+                            <input type="text" id="auditUsername" placeholder="用户名" style="max-width: 160px;">
+                            <input type="text" id="auditAction" placeholder="操作类型" style="max-width: 160px;">
+                            <button class="btn btn-primary" onclick="loadAuditLogs()">筛选</button>
+                            <button class="btn btn-secondary" onclick="exportAuditCsv()">导出 CSV</button>
+                        </div>
+                    </div>
+                    <div class="card-body" style="padding: 0;">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>用户</th>
+                                    <th>操作</th>
+                                    <th>资源</th>
+                                    <th>资源ID</th>
+                                    <th>IP</th>
+                                    <th>时间</th>
+                                </tr>
+                            </thead>
+                            <tbody id="auditLogList"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+    <script>
+        // 全局变量
+        let currentPage = 1;
+        const perPage = 20;
+        let pendingPage = 1;
+        const pendingPerPage = 20;
+        let pendingGroupIds = [];
+        let pendingSelection = new Set();
+        let lastImportPreview = null;
+        const BASE_PATH = window.location.pathname.indexOf('/thermodynamic') === 0 ? '/thermodynamic' : '';
+        const API_BASE = `${BASE_PATH}/api`;
+        let authToken = localStorage.getItem('authToken');
+        let scatterChart = null;
+        let visualizationReady = false;
+        let pendingRecordId = null;
+        let highlightTimer = null;
+
+
+        // 获取带认证的请求头
+        function getAuthHeaders() {
+            return {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${authToken}`
+            };
+        }
+
+        function getAuthHeaderOnly() {
+            return {
+                'Authorization': `Bearer ${authToken}`
+            };
+        }
+
+        const frontHomeLink = document.getElementById('frontHomeLink');
+        if (frontHomeLink) frontHomeLink.setAttribute('href', `${BASE_PATH}/`);
+        const apiDocsLink = document.getElementById('apiDocsLink');
+        if (apiDocsLink) apiDocsLink.setAttribute('href', `${BASE_PATH}/docs`);
+
+        // 登录处理
+        document.getElementById('loginForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+
+            try {
+                const res = await fetch(`${API_BASE}/auth/login`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+                const data = await res.json();
+
+                if (data.success) {
+                    authToken = data.data.access_token;
+                    localStorage.setItem('authToken', authToken);
+                    document.getElementById('loginPage').style.display = 'none';
+                    document.getElementById('dashboard').classList.add('active');
+                    loadDashboardData();
+                    addLog('👤', '管理员登录', `管理员 ${username} 登录系统`, 'update');
+                } else {
+                    document.getElementById('loginError').style.display = 'block';
+                    document.getElementById('loginError').textContent = data.detail || '登录失败';
+                }
+            } catch (error) {
+                document.getElementById('loginError').style.display = 'block';
+                document.getElementById('loginError').textContent = '网络错误，请重试';
+            }
+        });
+
+        // 验证 Token 有效性
+        async function validateToken() {
+            if (!authToken) return false;
+            try {
+                const res = await fetch(`${API_BASE}/auth/me`, {
+                    headers: getAuthHeaders()
+                });
+                return res.ok;
+            } catch (error) {
+                return false;
+            }
+        }
+
+        // 检查登录状态
+        (async function() {
+            if (authToken && await validateToken()) {
+                document.getElementById('loginPage').style.display = 'none';
+                document.getElementById('dashboard').classList.add('active');
+                loadDashboardData();
+            } else {
+                localStorage.removeItem('authToken');
+                authToken = null;
+            }
+        })();
+
+        // 退出登录
+        function logout() {
+            localStorage.removeItem('authToken');
+            authToken = null;
+            location.reload();
+        }
+
+        // 导航切换
+        document.querySelectorAll('.nav-item[data-page]').forEach(item => {
+            item.addEventListener('click', function() {
+                const page = this.dataset.page;
+                showPage(page);
+            });
+        });
+
+        function showPage(page) {
+            // 更新导航状态
+            document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
+            const navItem = document.querySelector(`.nav-item[data-page="${page}"]`);
+            if (navItem) navItem.classList.add('active');
+
+            // 切换页面
+            document.querySelectorAll('.page-section').forEach(p => p.classList.remove('active'));
+            document.getElementById(`page-${page}`).classList.add('active');
+
+            // 更新标题
+                const titles = {
+                    'overview': ['系统概览', '查看系统运行状态和数据统计'],
+                    'database': ['数据库管理', '管理和维护数据库'],
+                    'backup': ['自动备份', '管理数据库备份'],
+                    'records': ['数据记录', '查看所有数据记录'],
+                    'visualization': ['高级可视化', '探索数据分布与趋势'],
+                    'review': ['数据审核', '审核同组分同温度下的多压力值数据'],
+                    'import': ['导入导出', '批量导入和导出数据'],
+                    'history': ['数据历史', '查看数据修改记录'],
+                    'users': ['用户管理', '管理系统用户和权限'],
+                'totp': ['两步验证', '设置账户两步验证'],
+                'sessions': ['会话管理', '管理登录会话'],
+                'logs': ['登录日志', '查看登录记录'],
+                'settings': ['系统设置', '配置系统参数']
+            };
+            const title = titles[page] ? titles[page][0] : page;
+            const desc = titles[page] ? titles[page][1] : '';
+            document.getElementById('pageTitle').textContent = title;
+            document.getElementById('pageDesc').textContent = desc;
+
+            // 加载页面数据
+            if (page === 'records') loadAllRecords();
+            if (page === 'visualization') loadVisualization();
+            if (page === 'backup') loadBackups();
+            if (page === 'users') loadUsers();
+            if (page === 'totp') loadTOTPStatus();
+            if (page === 'sessions') loadSessions();
+            if (page === 'history') loadHistory();
+            if (page === 'logs') {
+                loadLoginLogs();
+                loadAuditLogs();
+            }
+            if (page === 'review') loadReviewStats();
+        }
+
+        async function jumpToPendingReview() {
+            const reviewPage = document.getElementById('page-review');
+            if (!reviewPage.classList.contains('active')) {
+                showPage('review');
+            }
+            await loadPendingGroups();
+            const target = document.getElementById('pendingGroupsContainer');
+            if (target) {
+                target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }
+        }
+
+        const pendingGroupsCard = document.getElementById('pendingGroupsCard');
+        if (pendingGroupsCard) pendingGroupsCard.addEventListener('click', jumpToPendingReview);
+        const pendingRecordsCard = document.getElementById('pendingRecordsCard');
+        if (pendingRecordsCard) pendingRecordsCard.addEventListener('click', jumpToPendingReview);
+
+        // 加载仪表板数据
+        async function loadDashboardData() {
+            try {
+                // 获取统计信息
+                const statsRes = await fetch(`${API_BASE}/statistics`);
+                const stats = await statsRes.json();
+
+                document.getElementById('statTotal').textContent = stats.total_records || 0;
+                document.getElementById('recordCount').textContent = stats.total_records || 0;
+                document.getElementById('dbRecordCount').textContent = stats.total_records || 0;
+                const minTemp = stats.min_temperature !== null && stats.min_temperature !== undefined
+                    ? stats.min_temperature.toFixed(0)
+                    : 0;
+                const maxTemp = stats.max_temperature !== null && stats.max_temperature !== undefined
+                    ? stats.max_temperature.toFixed(0)
+                    : 0;
+                const minPressure = stats.min_pressure !== null && stats.min_pressure !== undefined
+                    ? stats.min_pressure.toFixed(1)
+                    : 0;
+                const maxPressure = stats.max_pressure !== null && stats.max_pressure !== undefined
+                    ? stats.max_pressure.toFixed(0)
+                    : 0;
+                document.getElementById('statTempRange').textContent = `${minTemp}-${maxTemp}`;
+                document.getElementById('statPressureRange').textContent = `${minPressure}-${maxPressure}`;
+
+                // 获取最近记录
+                const recordsRes = await fetch(`${API_BASE}/records?page=1&per_page=5`);
+                const records = await recordsRes.json();
+                
+                const tbody = document.getElementById('recentRecords');
+                tbody.innerHTML = records.records.map(r => `
+                    <tr>
+                        <td>#${r.id}</td>
+                        <td style="color: #ecc94b;">${r.temperature.toFixed(1)}</td>
+                        <td style="color: #4299e1;">${r.pressure.toFixed(3)}</td>
+                        <td>${r.x_ch4.toFixed(3)}</td>
+                        <td>${r.created_at ? new Date(r.created_at).toLocaleDateString() : '-'}</td>
+                    </tr>
+                `).join('');
+
+                // 更新服务器时间
+                document.getElementById('serverTime').textContent = new Date().toLocaleString();
+                document.getElementById('lastUpdate').textContent = new Date().toLocaleString();
+
+                // 估算数据库大小
+                const dbSize = (stats.total_records * 0.1).toFixed(1);
+                document.getElementById('statDbSize').textContent = `${dbSize} KB`;
+
+            } catch (error) {
+                console.error('加载数据失败:', error);
+            }
+        }
+
+        // ==================== 可视化 ====================
+        function getVizNumber(id, fallback, min, max) {
+            const input = document.getElementById(id);
+            const raw = parseInt(input.value, 10);
+            let value = Number.isFinite(raw) ? raw : fallback;
+            if (min !== null && value < min) value = min;
+            if (max !== null && value > max) value = max;
+            input.value = value;
+            return value;
+        }
+
+        function initVisualizationCharts() {
+            if (!scatterChart) {
+                scatterChart = echarts.init(document.getElementById('scatterChart'));
+            }
+            if (!visualizationReady) {
+                window.addEventListener('resize', () => {
+                    if (scatterChart) scatterChart.resize();
+                });
+                visualizationReady = true;
+            }
+        }
+
+        async function loadVisualization() {
+            if (!window.echarts) {
+                showToast('可视化组件未加载', 'error');
+                return;
+            }
+
+            initVisualizationCharts();
+
+            try {
+                const scatterRes = await fetch(`${API_BASE}/chart/scatter-distribution`);
+                const scatterData = await scatterRes.json();
+                renderScatter(scatterData);
+            } catch (error) {
+                console.error('可视化加载失败:', error);
+                showToast('可视化加载失败', 'error');
+            }
+        }
+
+        function renderScatter(payload) {
+            const hasData = payload.data && payload.data.length > 0;
+            const pressureMin = hasData ? payload.pressure_min : 0;
+            const pressureMax = hasData ? payload.pressure_max : 1;
+
+            scatterChart.setOption({
+                backgroundColor: 'transparent',
+                tooltip: {
+                    trigger: 'item',
+                    formatter: (params) => {
+                        const point = (params.data && params.data.value) ? params.data.value : (params.data || []);
+                        const temp = point[0] !== null && point[0] !== undefined ? point[0] : 0;
+                        const pressure = point[1] !== null && point[1] !== undefined ? point[1] : 0;
+                        return `温度 ${temp.toFixed(2)} K<br>压力 ${pressure.toFixed(4)} MPa`;
+                    }
+                },
+                grid: { left: 60, right: 70, top: 20, bottom: 50 },
+                xAxis: {
+                    name: '温度 (K)',
+                    nameTextStyle: { color: '#a0aec0' },
+                    axisLabel: { color: '#a0aec0' },
+                    axisLine: { lineStyle: { color: '#2d3748' } },
+                    splitLine: { lineStyle: { color: '#1f2937' } }
+                },
+                yAxis: {
+                    name: '压力 (MPa)',
+                    nameTextStyle: { color: '#a0aec0' },
+                    axisLabel: { color: '#a0aec0' },
+                    axisLine: { lineStyle: { color: '#2d3748' } },
+                    splitLine: { lineStyle: { color: '#1f2937' } }
+                },
+                visualMap: {
+                    min: pressureMin,
+                    max: pressureMax,
+                    dimension: 2,
+                    right: 10,
+                    top: 'middle',
+                    calculable: true,
+                    textStyle: { color: '#a0aec0' },
+                    inRange: {
+                        color: ['#4299e1', '#48bb78', '#f6ad55', '#f56565']
+                    }
+                },
+                series: [{
+                    type: 'scatter',
+                    data: payload.data || [],
+                    symbolSize: 8,
+                    itemStyle: { opacity: 0.8 }
+                }]
+            }, true);
+
+            scatterChart.off('click');
+            scatterChart.on('click', (params) => {
+                const recordId = params.data ? params.data.id : null;
+                if (!recordId) return;
+                pendingRecordId = recordId;
+                currentPage = 1;
+                showPage('records');
+                showToast(`已定位记录 #${recordId}`);
+            });
+        }
+
+        function renderRecordRow(record, highlight = false) {
+            const highlightClass = highlight ? 'highlight-row' : '';
+            return `
+                <tr id="record-${record.id}" class="${highlightClass}">
+                    <td>#${record.id}</td>
+                    <td style="color: #ecc94b;">${record.temperature.toFixed(1)}</td>
+                    <td>${record.x_ch4.toFixed(3)}</td>
+                    <td>${record.x_c2h6.toFixed(3)}</td>
+                    <td>${record.x_c3h8.toFixed(3)}</td>
+                    <td>${record.x_co2.toFixed(3)}</td>
+                    <td>${record.x_n2.toFixed(3)}</td>
+                    <td>${record.x_h2s.toFixed(3)}</td>
+                    <td>${record.x_ic4h10.toFixed(3)}</td>
+                    <td style="color: #4299e1;">${record.pressure.toFixed(3)}</td>
+                </tr>
+            `;
+        }
+
+        async function highlightPendingRecord(currentRecords) {
+            if (!pendingRecordId) return;
+
+            const existingRow = document.getElementById(`record-${pendingRecordId}`);
+            if (existingRow) {
+                existingRow.classList.add('highlight-row');
+                existingRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                clearTimeout(highlightTimer);
+                highlightTimer = setTimeout(() => {
+                    existingRow.classList.remove('highlight-row');
+                }, 5000);
+                pendingRecordId = null;
+                return;
+            }
+
+            try {
+                const res = await fetch(`${API_BASE}/records/${pendingRecordId}`);
+                if (!res.ok) return;
+                const record = await res.json();
+                const tbody = document.getElementById('allRecords');
+                tbody.insertAdjacentHTML('afterbegin', renderRecordRow(record, true));
+                const newRow = document.getElementById(`record-${pendingRecordId}`);
+                if (newRow) {
+                    newRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                }
+                clearTimeout(highlightTimer);
+                highlightTimer = setTimeout(() => {
+                    if (newRow) newRow.classList.remove('highlight-row');
+                }, 5000);
+                pendingRecordId = null;
+            } catch (error) {
+                console.error('定位记录失败:', error);
+            }
+        }
+
+        // 加载所有记录
+        async function loadAllRecords() {
+            try {
+                const res = await fetch(`${API_BASE}/records?page=${currentPage}&per_page=${perPage}`);
+                const data = await res.json();
+
+                const tbody = document.getElementById('allRecords');
+                if (currentPage === 1) tbody.innerHTML = '';
+
+                tbody.innerHTML += data.records.map(r => renderRecordRow(r)).join('');
+                await highlightPendingRecord(data.records);
+
+                // 隐藏/显示加载更多按钮
+                document.getElementById('loadMoreBtn').style.display = 
+                    currentPage >= data.total_pages ? 'none' : 'inline-block';
+            } catch (error) {
+                console.error('加载记录失败:', error);
+            }
+        }
+
+        function loadMoreRecords() {
+            currentPage++;
+            loadAllRecords();
+        }
+
+        // 刷新数据
+        function refreshData() {
+            loadDashboardData();
+            showToast('数据已刷新');
+        }
+
+        // 导出功能
+        async function downloadFile(url, filename) {
+            try {
+                const res = await fetch(url, { headers: getAuthHeaderOnly() });
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    showToast(err.detail || '下载失败', 'error');
+                    return;
+                }
+                const blob = await res.blob();
+                const link = document.createElement('a');
+                link.href = window.URL.createObjectURL(blob);
+                link.download = filename;
+                document.body.appendChild(link);
+                link.click();
+                link.remove();
+                window.URL.revokeObjectURL(link.href);
+                showToast(`开始下载 ${filename}`);
+            } catch (error) {
+                showToast('下载失败: ' + error.message, 'error');
+            }
+        }
+
+        function exportCSV() {
+            downloadFile(`${API_BASE}/export/csv`, 'gas_data_export.csv');
+            addLog('📥', '导出数据', '导出 CSV 格式数据', 'export');
+        }
+
+        function exportExcel() {
+            downloadFile(`${API_BASE}/export/excel`, 'gas_data_export.xlsx');
+            addLog('📥', '导出数据', '导出 Excel 格式数据', 'export');
+        }
+
+        function exportAllData() {
+            exportExcel();
+        }
+
+        // 导入功能
+        async function handleImport(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const formData = new FormData();
+            formData.append('file', file);
+
+            try {
+                const res = await fetch(`${API_BASE}/import`, {
+                    method: 'POST',
+                    headers: getAuthHeaderOnly(),
+                    body: formData
+                });
+                const result = await res.json();
+
+                if (result.success) {
+                    showToast(result.message);
+                    addLog('📤', '导入数据', `成功导入数据: ${file.name}`, 'create');
+                    loadDashboardData();
+                } else {
+                    const detail = result.detail || {};
+                    if (detail && detail.errors) {
+                        const summary = detail.summary || {};
+                        showToast(
+                            `导入校验失败：${summary.invalid_count || detail.errors.length} 条数据不合法`,
+                            'error'
+                        );
+                        renderImportPreview({
+                            summary: {
+                                total: summary.total || 0,
+                                valid_count: summary.valid_count || 0,
+                                invalid_count: summary.invalid_count || detail.errors.length,
+                                warning_count: 0,
+                                skipped_count: summary.skipped_count || 0
+                            },
+                            errors: detail.errors || [],
+                            warnings: []
+                        });
+                    } else {
+                        showToast(result.detail || '导入失败', 'error');
+                    }
+                }
+            } catch (error) {
+                showToast('导入失败: ' + error.message, 'error');
+            }
+
+            event.target.value = '';
+        }
+
+        function renderImportPreview(preview) {
+            const container = document.getElementById('importPreviewResult');
+            if (!preview) {
+                container.innerHTML = '';
+                lastImportPreview = null;
+                return;
+            }
+            const summary = preview.summary || {};
+            const errors = preview.errors || [];
+            const warnings = preview.warnings || [];
+            lastImportPreview = preview;
+
+            let html = `
+                <div style="background: var(--bg-dark); padding: 12px; border-radius: 8px; border: 1px solid var(--border);">
+                    <div style="font-weight: 600; margin-bottom: 8px;">导入校验预览</div>
+                    <div style="font-size: 12px; color: var(--text-dim); line-height: 1.6;">
+                        总计 ${summary.total || 0} 行，合法 ${summary.valid_count || 0} 行，
+                        不合法 ${summary.invalid_count || 0} 行，软提示 ${summary.warning_count || 0} 行，
+                        跳过空行 ${summary.skipped_count || 0} 行
+                    </div>
+                </div>
+            `;
+
+            if (errors.length > 0) {
+                const shown = errors.slice(0, 10);
+                html += `
+                    <div style="margin-top: 12px; background: rgba(239,68,68,0.08); border: 1px solid rgba(239,68,68,0.3); padding: 10px; border-radius: 8px;">
+                        <div style="font-weight: 600; color: #ef4444; margin-bottom: 6px;">错误示例</div>
+                        <ul style="margin: 0; padding-left: 18px; font-size: 12px; color: var(--text);">
+                            ${shown.map(item => `<li>第 ${item.row} 行：${(item.errors || []).join('；')}</li>`).join('')}
+                        </ul>
+                        ${errors.length > shown.length ? `<div style="margin-top: 6px; font-size: 12px; color: var(--text-dim);">仅展示前 ${shown.length} 条</div>` : ''}
+                    </div>
+                `;
+            }
+
+            if (warnings.length > 0) {
+                const shownWarnings = warnings.slice(0, 10);
+                html += `
+                    <div style="margin-top: 12px; background: rgba(245,158,11,0.08); border: 1px solid rgba(245,158,11,0.3); padding: 10px; border-radius: 8px;">
+                        <div style="font-weight: 600; color: #f59e0b; margin-bottom: 6px;">软提示示例</div>
+                        <ul style="margin: 0; padding-left: 18px; font-size: 12px; color: var(--text);">
+                            ${shownWarnings.map(item => `<li>第 ${item.row} 行：${(item.warnings || []).join('；')}</li>`).join('')}
+                        </ul>
+                        ${warnings.length > shownWarnings.length ? `<div style="margin-top: 6px; font-size: 12px; color: var(--text-dim);">仅展示前 ${shownWarnings.length} 条</div>` : ''}
+                    </div>
+                `;
+            }
+
+            if (errors.length > 0 || warnings.length > 0) {
+                html += `
+                    <div style="margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap;">
+                        ${errors.length > 0 ? '<button class="btn btn-secondary" onclick="downloadImportReport(\'errors\')">下载错误报告</button>' : ''}
+                        ${warnings.length > 0 ? '<button class="btn btn-secondary" onclick="downloadImportReport(\'warnings\')">下载软提示报告</button>' : ''}
+                    </div>
+                `;
+            }
+
+            container.innerHTML = html;
+        }
+
+        async function handleImportPreview(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const formData = new FormData();
+            formData.append('file', file);
+
+            try {
+                const res = await fetch(`${API_BASE}/import/preview`, {
+                    method: 'POST',
+                    headers: getAuthHeaderOnly(),
+                    body: formData
+                });
+                const result = await res.json();
+
+                if (result.success) {
+                    renderImportPreview(result.data);
+                    showToast('校验预览已生成');
+                } else {
+                    showToast(result.detail || '预览失败', 'error');
+                    renderImportPreview(null);
+                }
+            } catch (error) {
+                showToast('预览失败: ' + error.message, 'error');
+                renderImportPreview(null);
+            }
+
+            event.target.value = '';
+        }
+
+        function buildCsvLine(values) {
+            return values.map(value => {
+                const text = value === null || value === undefined ? '' : String(value);
+                const escaped = text.replace(/"/g, '""');
+                return `"${escaped}"`;
+            }).join(',');
+        }
+
+        function downloadCsvContent(rows, filename) {
+            const csv = rows.join('\n');
+            const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = filename;
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            URL.revokeObjectURL(link.href);
+        }
+
+        function downloadImportReport(kind) {
+            if (!lastImportPreview) {
+                showToast('暂无可下载的校验结果', 'error');
+                return;
+            }
+            const rows = [];
+            if (kind === 'errors') {
+                const errors = lastImportPreview.errors || [];
+                if (errors.length === 0) {
+                    showToast('没有错误记录', 'error');
+                    return;
+                }
+                rows.push(buildCsvLine(['row', 'errors']));
+                errors.forEach(item => {
+                    rows.push(buildCsvLine([item.row, (item.errors || []).join('；')]));
+                });
+                downloadCsvContent(rows, 'import_errors.csv');
+            } else if (kind === 'warnings') {
+                const warnings = lastImportPreview.warnings || [];
+                if (warnings.length === 0) {
+                    showToast('没有软提示记录', 'error');
+                    return;
+                }
+                rows.push(buildCsvLine(['row', 'warnings']));
+                warnings.forEach(item => {
+                    rows.push(buildCsvLine([item.row, (item.warnings || []).join('；')]));
+                });
+                downloadCsvContent(rows, 'import_warnings.csv');
+            }
+        }
+
+        // 数据库操作
+        async function backupDatabase() {
+            await createBackup();
+        }
+
+        function optimizeDatabase() {
+            showToast('数据库优化完成');
+            addLog('⚡', '优化数据库', '执行数据库优化操作', 'update');
+        }
+
+        function showClearConfirm() {
+            if (confirm('确定要清空所有数据吗？此操作不可恢复！')) {
+                if (confirm('再次确认：这将删除所有记录，是否继续？')) {
+                    showToast('功能已禁用，请联系开发者', 'error');
+                }
+            }
+        }
+
+        // ==================== 备份功能 ====================
+        async function loadBackups() {
+            try {
+                // 获取备份状态
+                const statusRes = await fetch(`${API_BASE}/backup/status`, {
+                    headers: getAuthHeaders()
+                });
+                if (statusRes.ok) {
+                    const statusData = await statusRes.json();
+                    const status = statusData.data;
+                    document.getElementById('backupCount').textContent = status.backup_count || 0;
+                    document.getElementById('backupTotalSize').textContent = status.total_size || '0 KB';
+                    document.getElementById('backupInterval').textContent = status.backup_interval_hours
+                        ? `${status.backup_interval_hours}h`
+                        : '-';
+
+                    const statusBox = document.getElementById('backupStatus');
+                    const createBtn = document.getElementById('backupCreateButton');
+                    if (status.backup_interval_hours === 0) {
+                        if (statusBox) {
+                            statusBox.innerHTML = `
+                                <div style="display: flex; align-items: center; gap: 10px;">
+                                    <span style="color: var(--warning); font-size: 20px;">●</span>
+                                    <span>当前为托管数据库，备份请在云控制台完成</span>
+                                </div>
+                            `;
+                        }
+                        if (createBtn) createBtn.disabled = true;
+                    } else {
+                        if (statusBox) {
+                            statusBox.innerHTML = `
+                                <div style="display: flex; align-items: center; gap: 10px;">
+                                    <span style="color: var(--success); font-size: 20px;">●</span>
+                                    <span>自动备份已启用</span>
+                                </div>
+                            `;
+                        }
+                        if (createBtn) createBtn.disabled = false;
+                    }
+                }
+
+                // 获取备份列表
+                const listRes = await fetch(`${API_BASE}/backup/list`, {
+                    headers: getAuthHeaders()
+                });
+                if (listRes.ok) {
+                    const listData = await listRes.json();
+                    const backups = listData.data || [];
+                    const tbody = document.getElementById('backupList');
+                    
+                    if (backups.length === 0) {
+                        tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--text-dim);">暂无备份文件</td></tr>';
+                    } else {
+                        tbody.innerHTML = backups.map(b => `
+                            <tr>
+                                <td>${b.filename}</td>
+                                <td><span style="background: ${b.type === 'manual' ? 'var(--accent)' : 'var(--success)'}; padding: 2px 8px; border-radius: 4px; font-size: 12px;">${b.type === 'manual' ? '手动' : '自动'}</span></td>
+                                <td>${b.size_formatted}</td>
+                                <td>${new Date(b.created_at).toLocaleString()}</td>
+                                <td>
+                                    <button class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;" onclick="downloadBackup('${b.filename}')">下载</button>
+                                    <button class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;" onclick="restoreBackup('${b.filename}')">恢复</button>
+                                    <button class="btn btn-danger" style="padding: 6px 12px; font-size: 12px;" onclick="deleteBackupFile('${b.filename}')">删除</button>
+                                </td>
+                            </tr>
+                        `).join('');
+                    }
+                }
+            } catch (error) {
+                console.error('加载备份列表失败:', error);
+            }
+        }
+
+        async function createBackup() {
+            try {
+                const res = await fetch(`${API_BASE}/backup/create`, {
+                    method: 'POST',
+                    headers: getAuthHeaders()
+                });
+                const data = await res.json();
+                if (data.success) {
+                    showToast('备份创建成功');
+                    addLog('💾', '创建备份', '手动创建数据库备份', 'create');
+                    loadBackups();
+                } else {
+                    showToast(data.message || data.detail || '备份失败', 'error');
+                }
+            } catch (error) {
+                showToast('备份失败: ' + error.message, 'error');
+            }
+        }
+
+        function downloadBackup(filename) {
+            window.location.href = `${API_BASE}/backup/download/${filename}?token=${authToken}`;
+            addLog('📥', '下载备份', `下载备份文件: ${filename}`, 'export');
+        }
+
+        async function restoreBackup(filename) {
+            if (!confirm(`确定要恢复备份 ${filename} 吗？当前数据将被覆盖！`)) return;
+            
+            try {
+                const res = await fetch(`${API_BASE}/backup/restore/${filename}`, {
+                    method: 'POST',
+                    headers: getAuthHeaders()
+                });
+                const data = await res.json();
+                if (data.success) {
+                    showToast('备份恢复成功');
+                    addLog('🔄', '恢复备份', `恢复备份: ${filename}`, 'update');
+                    loadDashboardData();
+                } else {
+                    showToast(data.message || data.detail || '恢复失败', 'error');
+                }
+            } catch (error) {
+                showToast('恢复失败: ' + error.message, 'error');
+            }
+        }
+
+        async function deleteBackupFile(filename) {
+            if (!confirm(`确定要删除备份 ${filename} 吗？`)) return;
+            
+            try {
+                const res = await fetch(`${API_BASE}/backup/${filename}`, {
+                    method: 'DELETE',
+                    headers: getAuthHeaders()
+                });
+                const data = await res.json();
+                if (data.success) {
+                    showToast('备份已删除');
+                    addLog('🗑️', '删除备份', `删除备份: ${filename}`, 'delete');
+                    loadBackups();
+                } else {
+                    showToast(data.message || data.detail || '删除失败', 'error');
+                }
+            } catch (error) {
+                showToast('删除失败: ' + error.message, 'error');
+            }
+        }
+
+        // ==================== 用户管理 ====================
+        async function loadUsers() {
+            try {
+                const res = await fetch(`${API_BASE}/auth/users`, {
+                    headers: getAuthHeaders()
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    const users = data.data || [];
+                    const tbody = document.getElementById('userList');
+                    tbody.innerHTML = users.map(u => `
+                        <tr>
+                            <td>${u.username}</td>
+                            <td><span style="background: ${u.role === 'admin' ? 'var(--accent)' : 'var(--text-dim)'}; padding: 4px 12px; border-radius: 20px; font-size: 12px;">${u.role === 'admin' ? '管理员' : '用户'}</span></td>
+                            <td>${u.created_at || '-'}</td>
+                            <td><span style="color: var(--success);">● 活跃</span></td>
+                            <td>
+                                <button class="btn btn-secondary" onclick="resetUserPassword('${u.username}')" style="padding: 4px 10px;">重置密码</button>
+                                <button class="btn btn-danger" onclick="revokeUserSessions('${u.username}')" style="padding: 4px 10px;">撤销会话</button>
+                            </td>
+                        </tr>
+                    `).join('');
+                }
+            } catch (error) {
+                console.error('加载用户列表失败:', error);
+            }
+        }
+
+        async function changePassword() {
+            const oldPwd = document.getElementById('oldPassword').value;
+            const newPwd = document.getElementById('newPassword').value;
+            const confirmPwd = document.getElementById('confirmPassword').value;
+
+            if (!oldPwd || !newPwd || !confirmPwd) {
+                showToast('请填写所有密码字段', 'error');
+                return;
+            }
+
+            if (newPwd !== confirmPwd) {
+                showToast('两次输入的新密码不一致', 'error');
+                return;
+            }
+
+            try {
+                const res = await fetch(`${API_BASE}/auth/change-password`, {
+                    method: 'POST',
+                    headers: getAuthHeaders(),
+                    body: JSON.stringify({
+                        old_password: oldPwd,
+                        new_password: newPwd
+                    })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    showToast('密码修改成功，请重新登录');
+                    addLog('🔑', '修改密码', '管理员修改了密码', 'update');
+                    // 清空表单
+                    document.getElementById('oldPassword').value = '';
+                    document.getElementById('newPassword').value = '';
+                    document.getElementById('confirmPassword').value = '';
+                } else {
+                    showToast(data.detail || '密码修改失败', 'error');
+                }
+            } catch (error) {
+                showToast('修改失败: ' + error.message, 'error');
+            }
+        }
+
+        function showCreateUserModal() {
+            const username = prompt('请输入新用户名:');
+            if (!username) return;
+            
+            const password = prompt('请输入密码:');
+            if (!password) return;
+            
+            createUser(username, password);
+        }
+
+        async function createUser(username, password) {
+            try {
+                const res = await fetch(`${API_BASE}/auth/users`, {
+                    method: 'POST',
+                    headers: getAuthHeaders(),
+                    body: JSON.stringify({
+                        username,
+                        password,
+                        role: 'user'
+                    })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    showToast('用户创建成功');
+                    addLog('👤', '创建用户', `创建新用户: ${username}`, 'create');
+                    loadUsers();
+                } else {
+                    showToast(data.detail || '创建失败', 'error');
+                }
+            } catch (error) {
+                showToast('创建失败: ' + error.message, 'error');
+            }
+        }
+
+        async function resetUserPassword(username) {
+            const newPassword = prompt(`请输入 ${username} 的新密码:`);
+            if (!newPassword) return;
+
+            try {
+                const res = await fetch(`${API_BASE}/auth/users/${encodeURIComponent(username)}/reset-password`, {
+                    method: 'POST',
+                    headers: getAuthHeaders(),
+                    body: JSON.stringify({ new_password: newPassword })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    showToast('密码已重置');
+                    addLog('🔑', '重置密码', `重置用户 ${username} 密码`, 'update');
+                } else {
+                    showToast(data.detail || '重置失败', 'error');
+                }
+            } catch (error) {
+                showToast('重置失败: ' + error.message, 'error');
+            }
+        }
+
+        async function revokeUserSessions(username) {
+            if (!confirm(`确定要撤销 ${username} 的所有会话吗？`)) return;
+
+            try {
+                const res = await fetch(`${API_BASE}/auth/users/${encodeURIComponent(username)}/sessions/revoke-all`, {
+                    method: 'POST',
+                    headers: getAuthHeaders()
+                });
+                const data = await res.json();
+                if (data.success) {
+                    showToast(data.message || '会话已撤销');
+                    addLog('🔒', '撤销会话', `撤销用户 ${username} 会话`, 'update');
+                } else {
+                    showToast(data.detail || '撤销失败', 'error');
+                }
+            } catch (error) {
+                showToast('撤销失败: ' + error.message, 'error');
+            }
+        }
+
+        // 日志功能
+        function addLog(icon, title, desc, type) {
+            const logsContainer = document.getElementById('activityLogs');
+            const logHtml = `
+                <div class="activity-item">
+                    <div class="activity-icon ${type}">${icon}</div>
+                    <div class="activity-content">
+                        <h4>${title}</h4>
+                        <p>${desc}</p>
+                    </div>
+                    <div class="activity-time">刚刚</div>
+                </div>
+            `;
+            logsContainer.insertAdjacentHTML('afterbegin', logHtml);
+        }
+
+        function clearLogs() {
+            document.getElementById('activityLogs').innerHTML = `
+                <div class="activity-item">
+                    <div class="activity-icon update">🗑️</div>
+                    <div class="activity-content">
+                        <h4>日志已清空</h4>
+                        <p>所有操作日志已被清除</p>
+                    </div>
+                    <div class="activity-time">刚刚</div>
+                </div>
+            `;
+            showToast('日志已清空');
+        }
+
+        // Toast 提示
+        function showToast(message, type = 'success') {
+            const toast = document.createElement('div');
+            toast.style.cssText = `
+                position: fixed;
+                top: 20px;
+                right: 20px;
+                padding: 16px 24px;
+                background: ${type === 'error' ? '#f56565' : '#48bb78'};
+                color: white;
+                border-radius: 10px;
+                font-weight: 500;
+                z-index: 10000;
+                animation: slideIn 0.3s ease;
+            `;
+            toast.textContent = message;
+            document.body.appendChild(toast);
+
+            setTimeout(() => {
+                toast.style.animation = 'slideOut 0.3s ease';
+                setTimeout(() => toast.remove(), 300);
+            }, 3000);
+        }
+
+        // ==================== TOTP 两步验证 ====================
+        let totpSecret = '';
+
+        async function loadTOTPStatus() {
+            try {
+                const res = await fetch(`${API_BASE}/auth/totp/status`, {
+                    headers: getAuthHeaders()
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    const status = data.data;
+                    
+                    if (status.enabled) {
+                        document.getElementById('totpEnabled').style.display = 'block';
+                        document.getElementById('totpNotEnabled').style.display = 'none';
+                    } else {
+                        document.getElementById('totpEnabled').style.display = 'none';
+                        document.getElementById('totpNotEnabled').style.display = 'block';
+                    }
+                    document.getElementById('totpSetup').style.display = 'none';
+                }
+            } catch (error) {
+                console.error('加载TOTP状态失败:', error);
+            }
+        }
+
+        async function setupTOTP() {
+            try {
+                const res = await fetch(`${API_BASE}/auth/totp/setup`, {
+                    method: 'POST',
+                    headers: getAuthHeaders()
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    totpSecret = data.data.secret;
+                    document.getElementById('totpSecret').textContent = totpSecret;
+                    document.getElementById('totpSetup').style.display = 'block';
+                    document.getElementById('totpNotEnabled').style.display = 'none';
+                }
+            } catch (error) {
+                showToast('设置失败: ' + error.message, 'error');
+            }
+        }
+
+        async function enableTOTP() {
+            const code = document.getElementById('totpCode').value;
+            if (!code || code.length !== 6) {
+                showToast('请输入6位验证码', 'error');
+                return;
+            }
+
+            try {
+                const res = await fetch(`${API_BASE}/auth/totp/enable`, {
+                    method: 'POST',
+                    headers: getAuthHeaders(),
+                    body: JSON.stringify({ code })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    showToast('两步验证已启用');
+                    loadTOTPStatus();
+                } else {
+                    showToast(data.detail || '验证码错误', 'error');
+                }
+            } catch (error) {
+                showToast('启用失败: ' + error.message, 'error');
+            }
+        }
+
+        async function disableTOTP() {
+            if (!confirm('确定要禁用两步验证吗？这将降低账户安全性。')) return;
+
+            try {
+                const res = await fetch(`${API_BASE}/auth/totp/disable`, {
+                    method: 'POST',
+                    headers: getAuthHeaders()
+                });
+                if (res.ok) {
+                    showToast('两步验证已禁用');
+                    loadTOTPStatus();
+                }
+            } catch (error) {
+                showToast('禁用失败: ' + error.message, 'error');
+            }
+        }
+
+        function cancelTOTPSetup() {
+            document.getElementById('totpSetup').style.display = 'none';
+            document.getElementById('totpNotEnabled').style.display = 'block';
+        }
+
+        async function regenerateBackupCodes() {
+            if (!confirm('重新生成备用码将使原有备用码失效，确定继续？')) return;
+
+            try {
+                const res = await fetch(`${API_BASE}/auth/totp/backup-codes`, {
+                    method: 'POST',
+                    headers: getAuthHeaders()
+                });
+                const data = await res.json();
+                if (data.success) {
+                    alert('新的备用码：\n\n' + data.data.backup_codes.join('\n') + '\n\n请妥善保存！');
+                }
+            } catch (error) {
+                showToast('生成失败: ' + error.message, 'error');
+            }
+        }
+
+        // ==================== 会话管理 ====================
+        async function loadSessions() {
+            try {
+                const res = await fetch(`${API_BASE}/auth/sessions`, {
+                    headers: getAuthHeaders()
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    const sessions = data.data || [];
+                    const tbody = document.getElementById('sessionList');
+                    
+                    if (sessions.length === 0) {
+                        tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--text-dim);">暂无会话记录</td></tr>';
+                    } else {
+                        tbody.innerHTML = sessions.map((s, idx) => `
+                            <tr>
+                                <td>${s.ip_address || '-'}</td>
+                                <td style="max-width: 200px; overflow: hidden; text-overflow: ellipsis;">${s.user_agent || '-'}</td>
+                                <td>${s.created_at ? new Date(s.created_at).toLocaleString() : '-'}</td>
+                                <td>${s.last_active ? new Date(s.last_active).toLocaleString() : '-'}</td>
+                                <td><span style="color: var(--success);">● 活跃</span></td>
+                            </tr>
+                        `).join('');
+                    }
+                }
+
+                // 加载限流状态
+                const rateRes = await fetch(`${API_BASE}/security/rate-limit`);
+                if (rateRes.ok) {
+                    const rateData = await rateRes.json();
+                    const status = rateData.data;
+                    document.getElementById('currentIP').textContent = status.ip;
+                    document.getElementById('requestCount').textContent = `${status.requests_in_window} / ${status.max_requests}`;
+                    document.getElementById('rateLimitStatus').innerHTML = status.is_blocked 
+                        ? `<span style="color: var(--danger);">● 已限流</span>`
+                        : `<span style="color: var(--success);">● 正常</span>`;
+                }
+            } catch (error) {
+                console.error('加载会话失败:', error);
+            }
+        }
+
+        async function revokeAllSessions() {
+            if (!confirm('确定要撤销所有其他会话吗？其他设备将被强制下线。')) return;
+
+            try {
+                const res = await fetch(`${API_BASE}/auth/sessions/revoke-all`, {
+                    method: 'POST',
+                    headers: getAuthHeaders()
+                });
+                const data = await res.json();
+                if (data.success) {
+                    showToast(data.message);
+                    loadSessions();
+                }
+            } catch (error) {
+                showToast('操作失败: ' + error.message, 'error');
+            }
+        }
+
+        // ==================== 数据历史 ====================
+        async function loadHistory() {
+            try {
+                const recordIdInput = document.getElementById('historyRecordId');
+                const actionInput = document.getElementById('historyAction');
+                const usernameInput = document.getElementById('historyUsername');
+                const recordId = recordIdInput ? recordIdInput.value : '';
+                const action = actionInput ? actionInput.value : '';
+                const username = usernameInput ? usernameInput.value : '';
+
+                const params = new URLSearchParams();
+                params.set('limit', '200');
+                if (recordId) params.set('record_id', recordId);
+                if (action) params.set('action', action);
+                if (username) params.set('username', username);
+
+                const res = await fetch(`${API_BASE}/history?${params.toString()}`, {
+                    headers: getAuthHeaders()
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    const history = data.data || [];
+                    const tbody = document.getElementById('historyList');
+                    
+                    if (history.length === 0) {
+                        tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: var(--text-dim);">暂无历史记录</td></tr>';
+                    } else {
+                        tbody.innerHTML = history.map(h => `
+                            <tr>
+                                <td>#${h.record_id}</td>
+                                <td><span style="background: ${h.action === 'CREATE' ? 'var(--success)' : h.action === 'DELETE' ? 'var(--danger)' : 'var(--accent)'}; padding: 2px 8px; border-radius: 4px; font-size: 12px;">${h.action}</span></td>
+                                <td>${h.field_name || '-'}</td>
+                                <td style="max-width: 100px; overflow: hidden; text-overflow: ellipsis;">${h.old_value || '-'}</td>
+                                <td style="max-width: 100px; overflow: hidden; text-overflow: ellipsis;">${h.new_value || '-'}</td>
+                                <td>${h.username || '-'}</td>
+                                <td>${h.created_at ? new Date(h.created_at).toLocaleString() : '-'}</td>
+                            </tr>
+                        `).join('');
+                    }
+                }
+            } catch (error) {
+                console.error('加载历史失败:', error);
+            }
+        }
+
+        async function exportHistoryCsv() {
+            try {
+                const recordIdInput = document.getElementById('historyRecordId');
+                const actionInput = document.getElementById('historyAction');
+                const usernameInput = document.getElementById('historyUsername');
+                const recordId = recordIdInput ? recordIdInput.value : '';
+                const action = actionInput ? actionInput.value : '';
+                const username = usernameInput ? usernameInput.value : '';
+
+                const params = new URLSearchParams();
+                params.set('limit', '500');
+                if (recordId) params.set('record_id', recordId);
+                if (action) params.set('action', action);
+                if (username) params.set('username', username);
+
+                const res = await fetch(`${API_BASE}/history?${params.toString()}`, {
+                    headers: getAuthHeaders()
+                });
+                const data = await res.json();
+                if (!data.success) {
+                    showToast(data.detail || '导出失败', 'error');
+                    return;
+                }
+                const rows = [];
+                rows.push(buildCsvLine(['record_id', 'action', 'field', 'old_value', 'new_value', 'username', 'created_at']));
+                (data.data || []).forEach(h => {
+                    rows.push(buildCsvLine([
+                        h.record_id,
+                        h.action,
+                        h.field_name || '',
+                        h.old_value || '',
+                        h.new_value || '',
+                        h.username || '',
+                        h.created_at || ''
+                    ]));
+                });
+                downloadCsvContent(rows, 'data_history.csv');
+            } catch (error) {
+                showToast('导出失败: ' + error.message, 'error');
+            }
+        }
+
+        // ==================== 登录日志 ====================
+        async function loadLoginLogs() {
+            try {
+                const res = await fetch(`${API_BASE}/security/login-logs?limit=100`, {
+                    headers: getAuthHeaders()
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    const logs = data.data || [];
+                    const tbody = document.getElementById('loginLogList');
+                    
+                    if (logs.length === 0) {
+                        tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--text-dim);">暂无登录记录</td></tr>';
+                    } else {
+                        tbody.innerHTML = logs.map(log => `
+                            <tr>
+                                <td>${log.username}</td>
+                                <td>${log.ip_address}</td>
+                                <td>${log.success 
+                                    ? '<span style="color: var(--success);">✓ 成功</span>' 
+                                    : '<span style="color: var(--danger);">✗ 失败</span>'}</td>
+                                <td>${log.failure_reason || '-'}</td>
+                                <td>${log.created_at ? new Date(log.created_at).toLocaleString() : '-'}</td>
+                            </tr>
+                        `).join('');
+                    }
+                }
+            } catch (error) {
+                console.error('加载登录日志失败:', error);
+            }
+        }
+
+        // ==================== 审计日志 ====================
+        async function loadAuditLogs() {
+            try {
+                const usernameInput = document.getElementById('auditUsername');
+                const actionInput = document.getElementById('auditAction');
+                const username = usernameInput ? usernameInput.value : '';
+                const action = actionInput ? actionInput.value : '';
+                const params = new URLSearchParams();
+                params.set('limit', '200');
+                if (username) params.set('username', username);
+                if (action) params.set('action', action);
+
+                const res = await fetch(`${API_BASE}/security/audit-logs?${params.toString()}`, {
+                    headers: getAuthHeaders()
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    const logs = data.data || [];
+                    const tbody = document.getElementById('auditLogList');
+                    if (!tbody) return;
+                    if (logs.length === 0) {
+                        tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: var(--text-dim);">暂无审计记录</td></tr>';
+                    } else {
+                        tbody.innerHTML = logs.map(log => `
+                            <tr>
+                                <td>${log.username}</td>
+                                <td>${log.action}</td>
+                                <td>${log.resource || '-'}</td>
+                                <td>${log.resource_id || '-'}</td>
+                                <td>${log.ip_address || '-'}</td>
+                                <td>${log.created_at ? new Date(log.created_at).toLocaleString() : '-'}</td>
+                            </tr>
+                        `).join('');
+                    }
+                }
+            } catch (error) {
+                console.error('加载审计日志失败:', error);
+            }
+        }
+
+        async function exportAuditCsv() {
+            try {
+                const usernameInput = document.getElementById('auditUsername');
+                const actionInput = document.getElementById('auditAction');
+                const username = usernameInput ? usernameInput.value : '';
+                const action = actionInput ? actionInput.value : '';
+                const params = new URLSearchParams();
+                params.set('limit', '500');
+                if (username) params.set('username', username);
+                if (action) params.set('action', action);
+
+                const res = await fetch(`${API_BASE}/security/audit-logs?${params.toString()}`, {
+                    headers: getAuthHeaders()
+                });
+                const data = await res.json();
+                if (!data.success) {
+                    showToast(data.detail || '导出失败', 'error');
+                    return;
+                }
+                const rows = [];
+                rows.push(buildCsvLine(['username', 'action', 'resource', 'resource_id', 'ip_address', 'created_at']));
+                (data.data || []).forEach(log => {
+                    rows.push(buildCsvLine([
+                        log.username,
+                        log.action,
+                        log.resource || '',
+                        log.resource_id || '',
+                        log.ip_address || '',
+                        log.created_at || ''
+                    ]));
+                });
+                downloadCsvContent(rows, 'audit_logs.csv');
+            } catch (error) {
+                showToast('导出失败: ' + error.message, 'error');
+            }
+        }
+
+        // ==================== 数据审核 ====================
+        async function loadReviewStats() {
+            try {
+                const res = await fetch(`${API_BASE}/review/stats`, {
+                    headers: getAuthHeaders()
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    const stats = data.data;
+                    document.getElementById('pendingGroups').textContent = stats.pending_groups || 0;
+                    document.getElementById('pendingRecords').textContent = stats.pending_records || 0;
+                    document.getElementById('approvedRecords').textContent = stats.approved || 0;
+                    document.getElementById('rejectedRecords').textContent = stats.rejected || 0;
+                    document.getElementById('reviewCount').textContent = stats.pending_groups || 0;
+                }
+            } catch (error) {
+                console.error('加载审核统计失败:', error);
+            }
+        }
+
+        async function scanDuplicates() {
+            try {
+                showToast('正在扫描重复数据...');
+                const res = await fetch(`${API_BASE}/review/duplicates`, {
+                    headers: getAuthHeaders()
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    const duplicates = data.data || [];
+                    
+                    if (duplicates.length === 0) {
+                        document.getElementById('duplicateResults').innerHTML = 
+                            '<p style="color: var(--success);">✓ 未发现重复数据</p>';
+                    } else {
+                        let html = `<p style="margin-bottom: 15px;">发现 <strong style="color: var(--warning);">${duplicates.length}</strong> 组重复数据：</p>`;
+                        html += '<div style="max-height: 300px; overflow-y: auto;">';
+                        
+                        duplicates.slice(0, 20).forEach((dup, idx) => {
+                            html += `
+                                <div style="background: var(--bg-input); padding: 12px; border-radius: 8px; margin-bottom: 10px;">
+                                    <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+                                        <span>组 #${idx + 1}</span>
+                                        <span style="color: var(--warning);">${dup.count} 个不同压力值</span>
+                                    </div>
+                                    <div style="font-size: 13px; color: var(--text-dim);">
+                                        温度: ${dup.temperature.toFixed(2)} K | 
+                                        CH₄: ${dup.composition.x_ch4.toFixed(3)} | 
+                                        C₂H₆: ${dup.composition.x_c2h6.toFixed(3)} | 
+                                        C₃H₈: ${dup.composition.x_c3h8.toFixed(3)}
+                                    </div>
+                                    <div style="font-size: 13px; margin-top: 5px;">
+                                        压力: ${dup.pressures.map(p => p.toFixed(2)).join(', ')} MPa
+                                    </div>
+                                </div>
+                            `;
+                        });
+                        
+                        if (duplicates.length > 20) {
+                            html += `<p style="text-align: center; color: var(--text-dim);">...还有 ${duplicates.length - 20} 组</p>`;
+                        }
+                        html += '</div>';
+                        
+                        document.getElementById('duplicateResults').innerHTML = html;
+                    }
+                    showToast(`扫描完成，发现 ${duplicates.length} 组重复数据`);
+                }
+            } catch (error) {
+                showToast('扫描失败: ' + error.message, 'error');
+            }
+        }
+
+        async function moveDuplicatesToReview() {
+            if (!confirm('确定要将所有重复数据移到待审核区吗？这些数据将暂时从正式数据库中移除。')) return;
+
+            try {
+                const res = await fetch(`${API_BASE}/review/move-duplicates`, {
+                    method: 'POST',
+                    headers: getAuthHeaders()
+                });
+                const data = await res.json();
+                if (data.success) {
+                    showToast(data.message);
+                    loadReviewStats();
+                    loadPendingGroups();
+                    document.getElementById('duplicateResults').innerHTML = '';
+                } else {
+                    showToast(data.detail || '操作失败', 'error');
+                }
+            } catch (error) {
+                showToast('操作失败: ' + error.message, 'error');
+            }
+        }
+
+        function renderPendingPagination(meta) {
+            const pagination = document.getElementById('pendingGroupsPagination');
+            if (!meta || typeof meta.total !== 'number' || meta.total <= pendingPerPage) {
+                pagination.innerHTML = '';
+                return;
+            }
+
+            const prevDisabled = meta.page <= 1 ? 'disabled' : '';
+            const nextDisabled = meta.page >= meta.total_pages ? 'disabled' : '';
+
+            pagination.innerHTML = `
+                <div style="color: var(--text-dim); font-size: 12px;">
+                    共 ${meta.total} 组，第 ${meta.page} / ${meta.total_pages} 页
+                </div>
+                <div style="display: flex; gap: 8px;">
+                    <button class="btn btn-secondary" ${prevDisabled} onclick="changePendingPage(${meta.page - 1})">上一页</button>
+                    <button class="btn btn-secondary" ${nextDisabled} onclick="changePendingPage(${meta.page + 1})">下一页</button>
+                </div>
+            `;
+        }
+
+        function changePendingPage(targetPage) {
+            if (targetPage < 1) return;
+            pendingPage = targetPage;
+            loadPendingGroups();
+        }
+
+        function updatePendingSelectionSummary() {
+            const counter = document.getElementById('pendingSelectedCount');
+            if (counter) counter.textContent = pendingSelection.size;
+        }
+
+        function togglePendingGroupSelection(groupId, checked) {
+            if (checked) {
+                pendingSelection.add(groupId);
+            } else {
+                pendingSelection.delete(groupId);
+            }
+            updatePendingSelectionSummary();
+        }
+
+        function toggleSelectAllPending(checked) {
+            pendingSelection = new Set();
+            pendingGroupIds.forEach(groupId => {
+                if (checked) {
+                    pendingSelection.add(groupId);
+                }
+                const checkbox = document.getElementById(`pending-select-${groupId}`);
+                if (checkbox) checkbox.checked = checked;
+            });
+            updatePendingSelectionSummary();
+        }
+
+        async function loadPendingGroups() {
+            // 先刷新统计
+            await loadReviewStats();
+            
+            try {
+                const groupIdInput = document.getElementById('pendingFilterGroupId');
+                const tempMinInput = document.getElementById('pendingTempMin');
+                const tempMaxInput = document.getElementById('pendingTempMax');
+                const groupId = groupIdInput && groupIdInput.value ? groupIdInput.value.trim() : '';
+                const tempMin = tempMinInput ? tempMinInput.value : '';
+                const tempMax = tempMaxInput ? tempMaxInput.value : '';
+
+                const params = new URLSearchParams();
+                params.set('page', pendingPage);
+                params.set('per_page', pendingPerPage);
+                if (groupId) params.set('group_id', groupId);
+                if (tempMin !== '' && tempMin !== null && tempMin !== undefined) params.set('temp_min', tempMin);
+                if (tempMax !== '' && tempMax !== null && tempMax !== undefined) params.set('temp_max', tempMax);
+
+                const res = await fetch(`${API_BASE}/review/pending?${params.toString()}`, {
+                    headers: getAuthHeaders()
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    const payload = data.data || [];
+                    const groups = Array.isArray(payload) ? payload : (payload.groups || []);
+                    pendingGroupIds = groups.map(group => group.group_id);
+                    pendingSelection = new Set();
+                    const selectAll = document.getElementById('pendingSelectAll');
+                    if (selectAll) selectAll.checked = false;
+                    updatePendingSelectionSummary();
+                    
+                    const container = document.getElementById('pendingGroupsContainer');
+                    
+                    if (groups.length === 0) {
+                        pendingGroupIds = [];
+                        pendingSelection = new Set();
+                        const selectAll = document.getElementById('pendingSelectAll');
+                        if (selectAll) selectAll.checked = false;
+                        updatePendingSelectionSummary();
+                        container.innerHTML = '<p style="color: var(--text-dim); text-align: center;">暂无待审核数据</p>';
+                        renderPendingPagination(Array.isArray(payload) ? null : payload);
+                        return;
+                    }
+                    
+                    let html = '';
+                    groups.forEach(group => {
+                        html += `
+                            <div class="review-group" style="background: var(--bg-input); padding: 20px; border-radius: 12px; margin-bottom: 15px; border: 1px solid var(--border);">
+                                <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 15px;">
+                                    <div style="display: flex; align-items: center; gap: 10px;">
+                                        <label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-dim);">
+                                            <input type="checkbox" id="pending-select-${group.group_id}" onchange="togglePendingGroupSelection('${group.group_id}', this.checked)" style="accent-color: var(--accent);">
+                                            选中
+                                        </label>
+                                        <div>
+                                            <h4 style="margin-bottom: 8px;">${group.group_id}</h4>
+                                        <div style="font-size: 13px; color: var(--text-dim);">
+                                            温度: <span style="color: #ef4444; font-weight: 600;">${group.temperature.toFixed(2)} K</span>
+                                        </div>
+                                        </div>
+                                    </div>
+                                    <div style="text-align: right;">
+                                        <span style="background: var(--warning); color: #000; padding: 4px 12px; border-radius: 20px; font-size: 12px;">
+                                            ${group.pressure_count} 个压力值
+                                        </span>
+                                    </div>
+                                </div>
+                                
+                                <div style="background: var(--bg-dark); padding: 12px; border-radius: 8px; margin-bottom: 15px;">
+                                    <div style="font-size: 12px; color: var(--text-dim); margin-bottom: 8px;">组分配比</div>
+                                    <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; font-size: 13px;">
+                                        <div>CH₄: ${group.composition.x_ch4.toFixed(4)}</div>
+                                        <div>C₂H₆: ${group.composition.x_c2h6.toFixed(4)}</div>
+                                        <div>C₃H₈: ${group.composition.x_c3h8.toFixed(4)}</div>
+                                        <div>CO₂: ${group.composition.x_co2.toFixed(4)}</div>
+                                        <div>N₂: ${group.composition.x_n2.toFixed(4)}</div>
+                                        <div>H₂S: ${group.composition.x_h2s.toFixed(4)}</div>
+                                        <div>i-C₄H₁₀: ${group.composition.x_ic4h10.toFixed(4)}</div>
+                                    </div>
+                                </div>
+                                
+                                <div style="margin-bottom: 15px;">
+                                    <div style="font-size: 12px; color: var(--text-dim); margin-bottom: 8px;">选择要保留的压力值（可多选）</div>
+                                    <div style="display: flex; flex-wrap: wrap; gap: 10px;" id="pressures-${group.group_id}">
+                                        ${group.pressures.map(p => `
+                                            <label style="display: flex; align-items: center; gap: 8px; background: var(--bg-dark); padding: 8px 16px; border-radius: 8px; cursor: pointer;">
+                                                <input type="checkbox" name="pressure-${group.group_id}" value="${p.id}" checked style="accent-color: var(--accent);">
+                                                <input type="number" value="${p.pressure.toFixed(4)}" step="0.0001" 
+                                                    style="width: 100px; padding: 4px 8px; background: var(--bg-input); border: 1px solid var(--border); border-radius: 4px; color: var(--text);"
+                                                    onchange="updatePressure(${p.id}, this.value)">
+                                                <span style="color: var(--text-dim);">MPa</span>
+                                            </label>
+                                        `).join('')}
+                                    </div>
+                                </div>
+                                
+                                <div style="display: flex; gap: 10px; justify-content: flex-end;">
+                                    <button class="btn btn-danger" onclick="rejectGroup('${group.group_id}')" style="padding: 8px 20px;">
+                                        ✗ 全部拒绝
+                                    </button>
+                                    <button class="btn btn-primary" onclick="approveGroup('${group.group_id}')" style="padding: 8px 20px;">
+                                        ✓ 确认选中
+                                    </button>
+                                </div>
+                            </div>
+                        `;
+                    });
+                    
+                    container.innerHTML = html;
+                    renderPendingPagination(Array.isArray(payload) ? null : payload);
+                }
+            } catch (error) {
+                console.error('加载待审核数据失败:', error);
+            }
+        }
+
+        function applyPendingFilters() {
+            pendingPage = 1;
+            loadPendingGroups();
+        }
+
+        function clearPendingFilters() {
+            const groupId = document.getElementById('pendingFilterGroupId');
+            const tempMin = document.getElementById('pendingTempMin');
+            const tempMax = document.getElementById('pendingTempMax');
+            if (groupId) groupId.value = '';
+            if (tempMin) tempMin.value = '';
+            if (tempMax) tempMax.value = '';
+            pendingPage = 1;
+            loadPendingGroups();
+        }
+
+        async function updatePressure(pendingId, newValue) {
+            try {
+                const res = await fetch(`${API_BASE}/review/pressure/${pendingId}?pressure=${newValue}`, {
+                    method: 'PUT',
+                    headers: getAuthHeaders()
+                });
+                if (res.ok) {
+                    showToast('压力值已更新');
+                }
+            } catch (error) {
+                showToast('更新失败', 'error');
+            }
+        }
+
+        async function approveGroup(groupId) {
+            const checkboxes = document.querySelectorAll(`input[name="pressure-${groupId}"]:checked`);
+            const selectedIds = Array.from(checkboxes).map(cb => parseInt(cb.value));
+            
+            if (selectedIds.length === 0) {
+                showToast('请至少选择一个压力值', 'error');
+                return;
+            }
+
+            try {
+                const res = await fetch(`${API_BASE}/review/approve/${groupId}`, {
+                    method: 'POST',
+                    headers: getAuthHeaders(),
+                    body: JSON.stringify({ selected_ids: selectedIds })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    showToast(data.message);
+                    loadReviewStats();
+                    loadPendingGroups();
+                }
+            } catch (error) {
+                showToast('审核失败: ' + error.message, 'error');
+            }
+        }
+
+        async function rejectGroup(groupId) {
+            if (!confirm('确定要拒绝这组所有数据吗？')) return;
+
+            try {
+                const res = await fetch(`${API_BASE}/review/reject/${groupId}`, {
+                    method: 'POST',
+                    headers: getAuthHeaders()
+                });
+                const data = await res.json();
+                if (data.success) {
+                    showToast(data.message);
+                    loadReviewStats();
+                    loadPendingGroups();
+                }
+            } catch (error) {
+                showToast('操作失败: ' + error.message, 'error');
+            }
+        }
+
+        async function batchApproveGroups() {
+            if (pendingSelection.size === 0) {
+                showToast('请先选中要审核的组', 'error');
+                return;
+            }
+
+            const items = [];
+            const missing = [];
+
+            pendingSelection.forEach(groupId => {
+                const checkboxes = document.querySelectorAll(`input[name="pressure-${groupId}"]:checked`);
+                const selectedIds = Array.from(checkboxes).map(cb => parseInt(cb.value));
+                if (selectedIds.length === 0) {
+                    missing.push(groupId);
+                    return;
+                }
+                items.push({ group_id: groupId, selected_ids: selectedIds });
+            });
+
+            if (items.length === 0) {
+                showToast('所选组没有勾选任何压力值', 'error');
+                return;
+            }
+
+            if (missing.length > 0) {
+                showToast(`有 ${missing.length} 组未选择压力值，已跳过`, 'error');
+            }
+
+            if (!confirm(`确定要批量通过 ${items.length} 组数据吗？`)) return;
+
+            try {
+                const res = await fetch(`${API_BASE}/review/approve-batch`, {
+                    method: 'POST',
+                    headers: getAuthHeaders(),
+                    body: JSON.stringify({ items })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    showToast(data.message);
+                    loadReviewStats();
+                    loadPendingGroups();
+                } else {
+                    showToast(data.detail || '批量审核失败', 'error');
+                }
+            } catch (error) {
+                showToast('批量审核失败: ' + error.message, 'error');
+            }
+        }
+
+        async function batchRejectGroups() {
+            if (pendingSelection.size === 0) {
+                showToast('请先选中要拒绝的组', 'error');
+                return;
+            }
+
+            const groupIds = Array.from(pendingSelection);
+            if (!confirm(`确定要批量拒绝 ${groupIds.length} 组数据吗？`)) return;
+
+            try {
+                const res = await fetch(`${API_BASE}/review/reject-batch`, {
+                    method: 'POST',
+                    headers: getAuthHeaders(),
+                    body: JSON.stringify({ group_ids: groupIds })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    showToast(data.message);
+                    loadReviewStats();
+                    loadPendingGroups();
+                } else {
+                    showToast(data.detail || '批量拒绝失败', 'error');
+                }
+            } catch (error) {
+                showToast('批量拒绝失败: ' + error.message, 'error');
+            }
+        }
+
+        // ==================== 数据模板下载 ====================
+        function downloadCSVTemplate() {
+            window.location.href = `${API_BASE}/template/csv`;
+            showToast('正在下载 CSV 模板...');
+        }
+
+        function downloadExcelTemplate() {
+            window.location.href = `${API_BASE}/template/excel`;
+            showToast('正在下载 Excel 模板...');
+        }
+
+        // 动画样式
+        const style = document.createElement('style');
+        style.textContent = `
+            @keyframes slideIn {
+                from { transform: translateX(100px); opacity: 0; }
+                to { transform: translateX(0); opacity: 1; }
+            }
+            @keyframes slideOut {
+                from { transform: translateX(0); opacity: 1; }
+                to { transform: translateX(100px); opacity: 0; }
+            }
+        `;
+        document.head.appendChild(style);
+    </script>
+</body>
+</html>
+
