@@ -1787,6 +1787,7 @@ async def api_restore_groups(request: GroupBatchRequest, user: dict = Depends(re
 
 PUBLIC_COMPONENT_COLUMNS = ['x_ch4', 'x_c2h6', 'x_c3h8', 'x_co2', 'x_n2', 'x_h2s', 'x_ic4h10']
 PUBLIC_COMPONENT_SET = set(PUBLIC_COMPONENT_COLUMNS)
+BATCH_QUERY_LIMIT = 50
 
 
 def _validate_component_list(components: List[str]) -> List[str]:
@@ -1802,6 +1803,25 @@ def _validate_component_list(components: List[str]) -> List[str]:
             normalized.append(comp)
             seen.add(comp)
     return normalized
+
+
+def _build_component_conditions(components: List[str]) -> str:
+    conditions = [f"{comp} > 0" for comp in components]
+    conditions.extend([f"{comp} <= 0.02" for comp in PUBLIC_COMPONENT_COLUMNS if comp not in components])
+    return " AND ".join(conditions) if conditions else "1=1"
+
+
+def _query_by_components_with_cursor(cursor, components: List[str], temperature: float):
+    where_clause = _build_component_conditions(components)
+    query = f"""
+        SELECT temperature, pressure, {', '.join(PUBLIC_COMPONENT_COLUMNS)}
+        FROM gas_mixture
+        WHERE {where_clause} AND ABS(temperature - ?) <= 5
+        ORDER BY ABS(temperature - ?)
+        LIMIT 1
+    """
+    cursor.execute(query, [temperature, temperature])
+    return cursor.fetchone()
 
 
 def _get_range_pair(ranges: dict, comp: str) -> tuple[float, float]:
@@ -1930,6 +1950,11 @@ class QueryByComponentsRequest(BaseModel):
     components: List[str]
     temperature: float
 
+
+class BatchQueryRequest(BaseModel):
+    components: List[str]
+    temperatures: List[float]
+
 # 端点：POST /api/query/by-components
 # 功能：根据“组分组合 + 温度”查询最接近的相平衡压力（温度允许 ±5K）。
 # 参数（Body）：`QueryByComponentsRequest`（components：组分字段列表，temperature：温度）
@@ -1945,26 +1970,7 @@ async def api_query_by_components(request: QueryByComponentsRequest):
     try:
         with get_connection(dict_cursor=True) as conn:
             cursor = conn.cursor()
-
-            # 构建查询条件：已选组分 > 0，未选组分 <= 0.02
-            conditions = [f"{comp} > 0" for comp in components]
-            conditions.extend([f"{comp} <= 0.02" for comp in PUBLIC_COMPONENT_COLUMNS if comp not in components])
-
-            # 温度范围 ±5K
-            conditions.append("ABS(temperature - ?) <= 5")
-
-            where_clause = " AND ".join(conditions)
-
-            query = f"""
-                SELECT temperature, pressure, {', '.join(PUBLIC_COMPONENT_COLUMNS)}
-                FROM gas_mixture
-                WHERE {where_clause}
-                ORDER BY ABS(temperature - ?)
-                LIMIT 1
-            """
-
-            cursor.execute(query, [temperature, temperature])
-            row = cursor.fetchone()
+            row = _query_by_components_with_cursor(cursor, components, temperature)
 
             if row:
                 composition = {}
@@ -1987,6 +1993,64 @@ async def api_query_by_components(request: QueryByComponentsRequest):
     except Exception:
         logger.exception("query by components 查询失败")
         return {"success": False, "message": "查询失败"}
+
+
+# 端点：POST /api/query/batch
+# 功能：批量按组分组合 + 温度查询相平衡压力（单次请求处理多温度）。
+# 参数（Body）：`BatchQueryRequest`（components、temperatures）
+# 返回值：`{success:true, data:{results:[...]}}`；失败返回 `{success:false, message}`。
+@app.post("/api/query/batch", tags=["Public Query"])
+async def api_batch_query(request: BatchQueryRequest):
+    """
+    批量查询相平衡压力
+    """
+    components = _validate_component_list(request.components)
+    temperatures = request.temperatures or []
+
+    if not temperatures:
+        return {"success": False, "message": "未提供温度列表", "data": {"results": []}}
+    if len(temperatures) > BATCH_QUERY_LIMIT:
+        return {
+            "success": False,
+            "message": f"批量查询最多支持 {BATCH_QUERY_LIMIT} 条温度",
+            "data": {"results": []},
+        }
+
+    results = []
+    try:
+        with get_connection(dict_cursor=True) as conn:
+            cursor = conn.cursor()
+            for temp in temperatures:
+                if temp < 100 or temp > 400:
+                    results.append({
+                        "temperature": temp,
+                        "success": False,
+                        "status": "invalid",
+                        "message": "温度超出范围(100-400K)",
+                    })
+                    continue
+
+                row = _query_by_components_with_cursor(cursor, components, temp)
+                if row:
+                    results.append({
+                        "temperature": temp,
+                        "success": True,
+                        "status": "success",
+                        "pressure": row["pressure"],
+                        "matched_temperature": row["temperature"],
+                    })
+                else:
+                    results.append({
+                        "temperature": temp,
+                        "success": False,
+                        "status": "no-data",
+                        "message": "未找到匹配数据",
+                    })
+
+        return {"success": True, "data": {"results": results}}
+    except Exception:
+        logger.exception("batch query 查询失败")
+        return {"success": False, "message": "查询失败", "data": {"results": results}}
 
 
 # 端点：POST /api/query/range
