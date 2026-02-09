@@ -1,15 +1,16 @@
 """
 数据库初始化脚本
-从原始Excel文件导入数据到SQLite数据库
+从 CSV/Excel 文件导入数据到数据库
 """
 
 import os
+import zipfile
 import pandas as pd
 
 from backend.database import init_database, batch_create_records, get_statistics
 
 def import_data_from_excel(file_path: str = "date.csv"):
-    """从Excel文件导入数据"""
+    """从 CSV/Excel 文件导入数据"""
     print("="*50)
     print("   气体混合物数据导入工具")
     print("="*50)
@@ -23,7 +24,40 @@ def import_data_from_excel(file_path: str = "date.csv"):
     try:
         ext = os.path.splitext(file_path)[1].lower()
         if ext in [".csv", ".tsv"]:
-            df = pd.read_csv(file_path)
+            if zipfile.is_zipfile(file_path):
+                df = pd.read_excel(file_path)
+                print("    [WARN] 文件扩展名为 CSV，但内容为 Excel（xlsx）；已改用 read_excel 读取")
+            else:
+                sep = "\t" if ext == ".tsv" else None
+                encodings = ["utf-8-sig", "utf-8", "gb18030", "gbk", "latin1"]
+                df = None
+                last_err = None
+                for enc in encodings:
+                    try:
+                        df = pd.read_csv(
+                            file_path,
+                            sep=sep,
+                            engine="python",
+                            encoding=enc,
+                        )
+                        print(f"    [OK] 检测到编码: {enc}")
+                        break
+                    except UnicodeDecodeError as e:
+                        last_err = e
+                    except Exception as e:
+                        last_err = e
+                if df is None:
+                    try:
+                        df = pd.read_csv(
+                            file_path,
+                            sep=sep,
+                            engine="python",
+                            encoding="utf-8",
+                            encoding_errors="replace",
+                        )
+                        print("    [WARN] 使用 utf-8 + replace 兜底读取（可能存在少量乱码字符）")
+                    except Exception:
+                        raise last_err or RuntimeError("读取 CSV 失败")
         elif ext in [".xls", ".xlsx"]:
             df = pd.read_excel(file_path)
         else:

@@ -223,6 +223,17 @@ def get_all_records_no_pagination() -> List[Dict]:
         return [dict(row) for row in cursor.fetchall()]
 
 
+def get_records_for_export(limit: Optional[int] = None) -> List[Dict]:
+    """获取导出记录（可选限制条数）"""
+    with get_connection(dict_cursor=True) as conn:
+        cursor = conn.cursor()
+        if limit is not None:
+            cursor.execute('SELECT * FROM gas_mixture ORDER BY id ASC LIMIT ?', (limit,))
+        else:
+            cursor.execute('SELECT * FROM gas_mixture ORDER BY id ASC')
+        return [dict(row) for row in cursor.fetchall()]
+
+
 def batch_create_records(records: List[Dict[str, Any]]) -> int:
     """批量创建记录"""
     with get_connection(dict_cursor=True) as conn:

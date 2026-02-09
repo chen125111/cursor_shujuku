@@ -1,5 +1,9 @@
 """
-自动备份模块 - 数据库定时备份
+Automatic backup module for database snapshots.
+
+Notes:
+- Designed for SQLite file backups.
+- When running on MySQL, this module degrades to no-op and returns hints.
 """
 
 import os
@@ -43,11 +47,12 @@ _backup_running = False
 # ==================== 备份功能 ====================
 
 def is_backup_supported() -> bool:
+    """Return True when file backups are supported and enabled."""
     return _backup_enabled() and (not is_mysql())
 
 
 def ensure_backup_dir():
-    """确保备份目录存在"""
+    """Ensure backup directory exists."""
     if not is_backup_supported():
         return
     backup_dir = _backup_dir()
@@ -58,9 +63,10 @@ def ensure_backup_dir():
 
 def create_backup(manual: bool = False) -> Optional[str]:
     """
-    创建数据库备份
-    :param manual: 是否为手动备份
-    :return: 备份文件路径
+    Create database backup.
+
+    Args:
+        manual: Whether this is a manual backup.
     """
     try:
         if not is_backup_supported():
@@ -107,9 +113,10 @@ def create_backup(manual: bool = False) -> Optional[str]:
 
 def restore_backup(backup_filename: str) -> bool:
     """
-    从备份恢复数据库
-    :param backup_filename: 备份文件名
-    :return: 是否成功
+    Restore database from backup file.
+
+    Args:
+        backup_filename: Backup file name.
     """
     try:
         if not is_backup_supported():
@@ -136,9 +143,7 @@ def restore_backup(backup_filename: str) -> bool:
 
 
 def list_backups() -> List[dict]:
-    """
-    列出所有备份文件
-    """
+    """List available backup files."""
     if not is_backup_supported():
         return []
     ensure_backup_dir()
@@ -168,9 +173,7 @@ def list_backups() -> List[dict]:
 
 
 def delete_backup(backup_filename: str) -> bool:
-    """
-    删除指定备份
-    """
+    """Delete a backup file."""
     try:
         if not is_backup_supported():
             return False
@@ -186,9 +189,7 @@ def delete_backup(backup_filename: str) -> bool:
 
 
 def cleanup_old_backups():
-    """
-    清理超出数量限制的旧备份
-    """
+    """Remove oldest backups beyond MAX_BACKUPS."""
     if not is_backup_supported():
         return
     backups = list_backups()
@@ -200,7 +201,7 @@ def cleanup_old_backups():
 
 
 def format_size(size_bytes: int) -> str:
-    """格式化文件大小"""
+    """Format file size for display."""
     for unit in ['B', 'KB', 'MB', 'GB']:
         if size_bytes < 1024:
             return f"{size_bytes:.1f} {unit}"
@@ -211,7 +212,7 @@ def format_size(size_bytes: int) -> str:
 # ==================== 自动备份 ====================
 
 def _backup_worker():
-    """备份工作线程"""
+    """Backup worker thread."""
     global _backup_running
     
     print(f"[Backup] 自动备份已启动，间隔: {BACKUP_INTERVAL // 3600} 小时")
@@ -228,7 +229,7 @@ def _backup_worker():
 
 
 def start_auto_backup():
-    """启动自动备份"""
+    """Start auto backup thread."""
     global _backup_thread, _backup_running
     
     if _backup_running:
@@ -244,14 +245,14 @@ def start_auto_backup():
 
 
 def stop_auto_backup():
-    """停止自动备份"""
+    """Stop auto backup thread."""
     global _backup_running
     _backup_running = False
     print("[Backup] 自动备份已停止")
 
 
 def get_backup_status() -> dict:
-    """获取备份状态"""
+    """Get backup status summary."""
     if not _backup_enabled():
         return {
             "auto_backup_enabled": False,
@@ -291,7 +292,7 @@ def get_backup_status() -> dict:
 # ==================== 初始化 ====================
 
 def init_backup_system():
-    """初始化备份系统"""
+    """Initialize backup system and auto backup."""
     if not _backup_enabled():
         print("[Backup] 备份已通过 BACKUP_ENABLED 禁用")
         return
