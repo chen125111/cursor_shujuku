@@ -20,7 +20,15 @@ TOTP_ISSUER = "GasMixtureSystem"  # 发行者名称
 
 
 def generate_secret(length: int = 32) -> str:
-    """生成随机密钥"""
+    """
+    生成 TOTP 密钥（Base32）。
+
+    Args:
+        length: 随机字节长度（越大越安全；默认 32）
+
+    Returns:
+        Base32 编码后的密钥字符串（去掉尾部 `=` 填充）。
+    """
     # 生成随机字节
     random_bytes = os.urandom(length)
     # Base32 编码
@@ -31,6 +39,13 @@ def generate_secret(length: int = 32) -> str:
 def get_totp_token(secret: str, timestamp: int = None) -> str:
     """
     生成 TOTP 验证码
+
+    Args:
+        secret: Base32 密钥
+        timestamp: 时间戳（秒）。不传则使用当前时间。
+
+    Returns:
+        指定位数（TOTP_DIGITS）的验证码字符串；secret 非法时返回空字符串。
     """
     if timestamp is None:
         timestamp = int(time.time())
@@ -70,6 +85,14 @@ def verify_totp(secret: str, code: str, window: int = 1) -> bool:
     """
     验证 TOTP 验证码
     window: 允许的时间窗口偏移（前后各 window 个时间步长）
+
+    Args:
+        secret: Base32 密钥
+        code: 用户输入验证码
+        window: 时间窗口偏移（默认 1，表示允许前后各 1 个时间步长）
+
+    Returns:
+        是否通过验证。
     """
     if not code or len(code) != TOTP_DIGITS:
         return False
@@ -90,6 +113,13 @@ def get_totp_uri(secret: str, username: str) -> str:
     """
     生成 TOTP URI（用于二维码）
     格式: otpauth://totp/{issuer}:{username}?secret={secret}&issuer={issuer}&digits={digits}&period={period}
+
+    Args:
+        secret: Base32 密钥
+        username: 用户名
+
+    Returns:
+        otpauth URI 字符串（可用于生成二维码，供验证器 App 扫描）。
     """
     return f"otpauth://totp/{TOTP_ISSUER}:{username}?secret={secret}&issuer={TOTP_ISSUER}&digits={TOTP_DIGITS}&period={TOTP_INTERVAL}"
 
@@ -97,7 +127,13 @@ def get_totp_uri(secret: str, username: str) -> str:
 # ==================== 数据库操作 ====================
 
 def init_totp_table():
-    """初始化 TOTP 表"""
+    """
+    初始化安全库中的 TOTP 配置表（user_totp）。
+
+    Notes:
+        - 表存储 secret、enabled、备用码等信息。
+        - 本函数通常在系统启动阶段调用一次。
+    """
     id_column = "BIGINT PRIMARY KEY AUTO_INCREMENT" if is_security_mysql() else "INTEGER PRIMARY KEY AUTOINCREMENT"
     username_type = "VARCHAR(64)" if is_security_mysql() else "TEXT"
     secret_type = "VARCHAR(64)" if is_security_mysql() else "TEXT"
@@ -122,6 +158,17 @@ def setup_totp(username: str) -> Tuple[str, str]:
     """
     为用户设置 TOTP
     返回: (secret, uri)
+
+    Args:
+        username: 用户名
+
+    Returns:
+        (secret, uri)
+        - secret: Base32 密钥
+        - uri: otpauth URI（用于生成二维码）
+
+    Notes:
+        调用后会生成一组备用码（一次性使用），并将 enabled 置为 0，等待用户通过验证码确认启用。
     """
     secret = generate_secret()
     uri = get_totp_uri(secret, username)
@@ -153,7 +200,16 @@ def setup_totp(username: str) -> Tuple[str, str]:
 
 
 def enable_totp(username: str, code: str) -> bool:
-    """启用 TOTP（需要验证码确认）"""
+    """
+    启用 TOTP（需要验证码确认）。
+
+    Args:
+        username: 用户名
+        code: 当前验证码（用于验证 secret 是否已正确配置到验证器）
+
+    Returns:
+        是否启用成功。
+    """
     conn = open_security_connection(dict_cursor=True)
     cursor = conn.cursor()
     
@@ -177,7 +233,15 @@ def enable_totp(username: str, code: str) -> bool:
 
 
 def disable_totp(username: str) -> bool:
-    """禁用 TOTP"""
+    """
+    禁用 TOTP。
+
+    Args:
+        username: 用户名
+
+    Returns:
+        是否禁用成功（是否影响到行）。
+    """
     conn = open_security_connection(dict_cursor=True)
     cursor = conn.cursor()
     cursor.execute('UPDATE user_totp SET enabled = 0 WHERE username = ?', (username,))
@@ -188,7 +252,15 @@ def disable_totp(username: str) -> bool:
 
 
 def is_totp_enabled(username: str) -> bool:
-    """检查用户是否启用了 TOTP"""
+    """
+    检查用户是否启用了 TOTP。
+
+    Args:
+        username: 用户名
+
+    Returns:
+        是否启用。
+    """
     conn = open_security_connection(dict_cursor=True)
     cursor = conn.cursor()
     cursor.execute('SELECT enabled FROM user_totp WHERE username = ?', (username,))
@@ -198,7 +270,19 @@ def is_totp_enabled(username: str) -> bool:
 
 
 def verify_user_totp(username: str, code: str) -> bool:
-    """验证用户的 TOTP 验证码"""
+    """
+    验证用户的两步验证码（支持备用码）。
+
+    Args:
+        username: 用户名
+        code: 验证码或备用码
+
+    Returns:
+        是否通过验证。
+
+    Notes:
+        - 若 code 是备用码且验证成功，会将该备用码从列表中移除（一次性）。
+    """
     conn = open_security_connection(dict_cursor=True)
     cursor = conn.cursor()
     
@@ -236,7 +320,15 @@ def verify_user_totp(username: str, code: str) -> bool:
 
 
 def get_totp_status(username: str) -> dict:
-    """获取用户的 TOTP 状态"""
+    """
+    获取用户的 TOTP 状态信息。
+
+    Args:
+        username: 用户名
+
+    Returns:
+        状态字典，包含是否已配置/是否启用/创建时间/最后使用时间/备用码数量等。
+    """
     conn = open_security_connection(dict_cursor=True)
     cursor = conn.cursor()
     cursor.execute('''

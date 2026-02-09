@@ -1,5 +1,10 @@
 """
 认证模块 - JWT Token 认证和密码加密
+
+说明：
+- 密码使用 PBKDF2-HMAC-SHA256（随机 salt）进行哈希存储/验证
+- JWT 采用 HS256 对 payload 进行签名（不依赖第三方 JWT 库）
+- 用户信息优先从安全库（`user_accounts`）读取；必要时回退到环境变量管理员账户
 """
 
 import base64
@@ -40,7 +45,13 @@ ALLOWED_ROLES = {"admin", "user"}
 
 def hash_password(password: str) -> str:
     """
-    使用 PBKDF2 算法加密密码
+    使用 PBKDF2-HMAC-SHA256 对密码进行安全哈希。
+
+    Args:
+        password: 明文密码
+
+    Returns:
+        可存储的密码哈希字符串（Base64 编码），内部格式为 `salt(32 bytes) + key`。
     """
     salt = os.urandom(32)
     key = hashlib.pbkdf2_hmac(
@@ -54,7 +65,14 @@ def hash_password(password: str) -> str:
 
 def verify_password(password: str, password_hash: str) -> bool:
     """
-    验证密码是否正确
+    校验明文密码与已存储的 PBKDF2 哈希是否匹配。
+
+    Args:
+        password: 明文密码
+        password_hash: 存储的密码哈希（Base64）
+
+    Returns:
+        是否匹配。
     """
     try:
         decoded = base64.b64decode(password_hash.encode('utf-8'))
@@ -77,6 +95,15 @@ if ADMIN_PASSWORD:
 
 
 def _get_user_from_db(username: str) -> Optional[Dict]:
+    """
+    从安全数据库读取用户信息。
+
+    Args:
+        username: 用户名
+
+    Returns:
+        用户信息字典（包含 password_hash / role / is_active 等）；不存在或异常时返回 None。
+    """
     try:
         conn = open_security_connection(dict_cursor=True)
         cursor = conn.cursor()
@@ -103,6 +130,15 @@ def _get_user_from_db(username: str) -> Optional[Dict]:
 
 
 def _upsert_user(username: str, password_hash: str, role: str, is_active: bool = True) -> None:
+    """
+    在安全数据库中插入或更新用户信息。
+
+    Args:
+        username: 用户名
+        password_hash: 密码哈希（PBKDF2 Base64）
+        role: 角色（admin/user）
+        is_active: 是否启用
+    """
     conn = open_security_connection(dict_cursor=True)
     cursor = conn.cursor()
     cursor.execute(
@@ -132,6 +168,13 @@ def _upsert_user(username: str, password_hash: str, role: str, is_active: bool =
 
 
 def ensure_admin_user() -> None:
+    """
+    确保管理员账户存在于安全数据库中（当配置了 ADMIN_PASSWORD 时）。
+
+    Notes:
+        - 若未设置 `ADMIN_PASSWORD`，该函数不会创建/更新管理员账户。
+        - 管理员用户名可通过 `ADMIN_USERNAME` 配置。
+    """
     if not ADMIN_PASSWORD:
         return
     password_hash = hash_password(ADMIN_PASSWORD)
@@ -174,7 +217,14 @@ def base64url_decode(data: str) -> bytes:
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     """
-    创建 JWT Token
+    创建 JWT Token（HS256）。
+
+    Args:
+        data: 需要写入 payload 的数据（会复制一份并附加 `exp` 与 `iat`）
+        expires_delta: 自定义过期时间；不传则使用默认过期配置
+
+    Returns:
+        JWT 字符串：`header.payload.signature`
     """
     to_encode = data.copy()
     
@@ -211,6 +261,15 @@ def verify_token(token: str) -> Optional[Dict]:
     """
     验证 JWT Token
     返回解码后的 payload，验证失败返回 None
+
+    Args:
+        token: JWT 字符串
+
+    Returns:
+        解码后的 payload（dict）；验证失败返回 None。
+
+    Notes:
+        - 校验内容包含：签名、payload JSON 解码、exp 过期时间
     """
     try:
         parts = token.split('.')
@@ -249,7 +308,14 @@ def verify_token(token: str) -> Optional[Dict]:
 
 def authenticate_user(username: str, password: str) -> Optional[Dict]:
     """
-    验证用户登录
+    验证用户名与密码是否正确。
+
+    Args:
+        username: 用户名
+        password: 明文密码
+
+    Returns:
+        登录成功返回用户信息字典（username/role）；失败返回 None。
     """
     user = _get_user_from_db(username)
     if user:
@@ -283,6 +349,12 @@ def authenticate_user(username: str, password: str) -> Optional[Dict]:
 def get_current_user(token: str) -> Optional[Dict]:
     """
     从 Token 获取当前用户
+
+    Args:
+        token: JWT Token（不含 Bearer 前缀）
+
+    Returns:
+        用户信息字典（username/role）；无效/过期/禁用时返回 None。
     """
     payload = verify_token(token)
     if not payload:
@@ -316,6 +388,14 @@ def get_current_user(token: str) -> Optional[Dict]:
 def create_user(username: str, password: str, role: str = "user") -> bool:
     """
     创建新用户
+
+    Args:
+        username: 用户名（不得与管理员内置用户重名）
+        password: 明文密码（调用方应在上层执行密码策略校验）
+        role: 角色（默认 user）
+
+    Returns:
+        是否创建成功（用户名已存在、角色非法等会返回 False）。
     """
     if role not in ALLOWED_ROLES:
         return False
@@ -333,6 +413,14 @@ def create_user(username: str, password: str, role: str = "user") -> bool:
 def change_password(username: str, old_password: str, new_password: str) -> bool:
     """
     修改密码
+
+    Args:
+        username: 用户名
+        old_password: 原密码
+        new_password: 新密码
+
+    Returns:
+        是否修改成功（原密码不匹配、用户不存在等返回 False）。
     """
     user = _get_user_from_db(username)
     if user:
@@ -360,6 +448,13 @@ def change_password(username: str, old_password: str, new_password: str) -> bool
 def reset_user_password(username: str, new_password: str) -> bool:
     """
     管理员重置用户密码
+
+    Args:
+        username: 用户名
+        new_password: 新密码
+
+    Returns:
+        是否重置成功（用户不存在则返回 False）。
     """
     user = _get_user_from_db(username)
     if user:
@@ -377,6 +472,9 @@ def reset_user_password(username: str, new_password: str) -> bool:
 def list_users() -> list:
     """
     列出所有用户（不包含密码）
+
+    Returns:
+        用户列表（每项包含 username/role/is_active/created_at 等字段）。
     """
     users = []
     try:

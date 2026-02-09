@@ -69,14 +69,33 @@ logger = logging.getLogger(__name__)
 # ==================== 认证依赖 ====================
 
 def get_token_from_header(authorization: Optional[str] = Header(None)) -> Optional[str]:
-    """从请求头获取 Token"""
+    """
+    从请求头 `Authorization` 中解析 Bearer Token。
+
+    Args:
+        authorization: FastAPI 注入的请求头值（形如 `"Bearer <token>"`）
+
+    Returns:
+        解析得到的 token 字符串；若头部缺失或格式不匹配返回 None。
+    """
     if authorization and authorization.startswith("Bearer "):
         return authorization[7:]
     return None
 
 
 def require_auth(authorization: Optional[str] = Header(None)):
-    """认证依赖项"""
+    """
+    FastAPI 认证依赖项（用于需要登录的接口）。
+
+    Args:
+        authorization: `Authorization` 请求头
+
+    Returns:
+        当前用户信息字典（至少包含 username/role）。
+
+    Raises:
+        HTTPException: 未提供 token / token 无效或过期时抛出 401。
+    """
     token = get_token_from_header(authorization)
     if not token:
         raise HTTPException(status_code=401, detail="未提供认证令牌")
@@ -138,12 +157,30 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 
 # 软提示（不阻止写入）
 def format_soft_warning(warnings: List[str]) -> str:
+    """
+    将软提示列表格式化为可拼接到 message 的字符串。
+
+    Args:
+        warnings: 软提示文本列表
+
+    Returns:
+        格式化后的字符串；当无提示时返回空字符串。
+    """
     if not warnings:
         return ""
     return f"（注意：{'; '.join(warnings)}）"
 
 
 def format_soft_warning_count(count: int) -> str:
+    """
+    将“软提示数量”格式化为可拼接到 message 的字符串。
+
+    Args:
+        count: 软提示条数
+
+    Returns:
+        格式化后的字符串；当 count<=0 时返回空字符串。
+    """
     if count <= 0:
         return ""
     return f"（注意：{count} 条记录压力高于 {PRESSURE_SOFT_MAX:.0f} MPa，可能为异常值）"
@@ -903,6 +940,22 @@ async def api_import_preview(file: UploadFile = File(...), user: dict = Depends(
 
 
 def parse_import_content(filename: str, content: bytes):
+    """
+    解析导入文件内容，返回可写入数据库的记录列表。
+
+    Args:
+        filename: 上传文件名（用于判断扩展名 csv/xlsx/xls）
+        content: 文件二进制内容
+
+    Returns:
+        (records, row_numbers, skipped)
+        - records: 解析成功的记录字典列表（字段名为数据库字段）
+        - row_numbers: 对应原文件行号（用于报错定位）
+        - skipped: 被跳过的行数（空行/无效行等）
+
+    Raises:
+        HTTPException: 当文件格式不支持时抛出 400。
+    """
     records = []
     row_numbers = []
     skipped = 0
@@ -934,7 +987,20 @@ def parse_import_content(filename: str, content: bytes):
 
 
 def parse_import_row(row: dict) -> Optional[dict]:
-    """解析导入行数据"""
+    """
+    解析单行导入数据，并将不同表头映射为数据库字段。
+
+    Args:
+        row: 一行数据（来自 CSV DictReader 或 Excel 行转换后的 dict）
+
+    Returns:
+        记录字典（包含 temperature/pressure 与 7 个组分字段）；
+        当该行为空/无效（如温度与压力均为 0）时返回 None。
+
+    Notes:
+        - 本函数只做“字段映射与类型转换”的宽松解析，严格规则校验由 `validate_record` 负责。
+        - 对无法转换为 float 的值会回落为 0.0，以便后续校验阶段给出更明确的错误信息。
+    """
     # 支持多种列名格式
     column_mapping = {
         'temperature': ['T (K)', 'T(K)', 'temperature', 'Temperature', '温度'],
@@ -1284,7 +1350,15 @@ async def api_get_sessions(user: dict = Depends(require_auth)):
 @app.delete("/api/auth/sessions/{session_id}", tags=["Sessions"])
 async def api_revoke_session(session_id: int, user: dict = Depends(require_auth)):
     """撤销指定会话"""
-    # 这里需要根据session_id查找并撤销
+    from backend.security import revoke_session_by_id
+
+    # 普通用户只能撤销自己的会话；管理员可撤销任意会话
+    username = None if user["role"] == "admin" else user["username"]
+    ok = revoke_session_by_id(session_id, username=username)
+    if not ok:
+        raise HTTPException(status_code=404, detail="会话不存在")
+
+    record_audit_log(user["username"], "REVOKE_SESSION", "session", session_id)
     return {"success": True, "message": "会话已撤销"}
 
 
@@ -2280,6 +2354,8 @@ async def api_download_excel_template():
 @app.get("/api/backup/status", tags=["Backup"])
 async def api_backup_status(user: dict = Depends(require_auth)):
     """获取备份状态"""
+    if user["role"] != "admin":
+        raise HTTPException(status_code=403, detail="权限不足")
     return {"success": True, "data": get_backup_status()}
 
 
@@ -2290,6 +2366,8 @@ async def api_backup_status(user: dict = Depends(require_auth)):
 @app.get("/api/backup/list", tags=["Backup"])
 async def api_backup_list(user: dict = Depends(require_auth)):
     """获取备份列表"""
+    if user["role"] != "admin":
+        raise HTTPException(status_code=403, detail="权限不足")
     return {"success": True, "data": list_backups()}
 
 
@@ -2356,8 +2434,23 @@ async def api_delete_backup(filename: str, user: dict = Depends(require_auth)):
 # 参数（Header）：Authorization：`Bearer <token>`（需登录）
 # 返回值：`FileResponse(application/octet-stream)`；不存在返回 404。
 @app.get("/api/backup/download/{filename}", tags=["Backup"])
-async def api_download_backup(filename: str, user: dict = Depends(require_auth)):
+async def api_download_backup(
+    filename: str,
+    token: Optional[str] = None,
+    authorization: Optional[str] = Header(None),
+):
     """下载备份文件"""
+    # 兼容浏览器下载场景：window.location.href 无法携带 Authorization 头
+    # 前端可使用 /api/backup/download/{filename}?token=<access_token>
+    bearer = get_token_from_header(authorization) or token
+    if not bearer:
+        raise HTTPException(status_code=401, detail="未提供认证令牌")
+    user = get_current_user(bearer)
+    if not user:
+        raise HTTPException(status_code=401, detail="令牌无效或已过期")
+    if user["role"] != "admin":
+        raise HTTPException(status_code=403, detail="权限不足")
+
     backup_dir = get_backup_dir()
     filepath = os.path.join(backup_dir, filename)
     

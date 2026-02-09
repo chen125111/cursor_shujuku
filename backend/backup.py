@@ -1,5 +1,9 @@
 """
 自动备份模块 - 数据库定时备份
+
+说明：
+- 主要针对 SQLite 文件数据库提供备份/恢复能力
+- 当切换到 MySQL（托管数据库）时，本模块会自动降级：仅返回提示，不执行文件级备份
 """
 
 import os
@@ -43,11 +47,22 @@ _backup_running = False
 # ==================== 备份功能 ====================
 
 def is_backup_supported() -> bool:
+    """
+    判断当前数据库模式是否支持文件级备份。
+
+    Returns:
+        当使用 SQLite 且 BACKUP_ENABLED 未显式关闭时返回 True；否则 False。
+    """
     return _backup_enabled() and (not is_mysql())
 
 
 def ensure_backup_dir():
-    """确保备份目录存在"""
+    """
+    确保备份目录存在（不存在则创建）。
+
+    Notes:
+        - 若当前为 MySQL 模式或 BACKUP_ENABLED 禁用，会直接返回，不做任何操作。
+    """
     if not is_backup_supported():
         return
     backup_dir = _backup_dir()
@@ -59,8 +74,12 @@ def ensure_backup_dir():
 def create_backup(manual: bool = False) -> Optional[str]:
     """
     创建数据库备份
-    :param manual: 是否为手动备份
-    :return: 备份文件路径
+
+    Args:
+        manual: 是否为手动备份（影响备份文件名中的类型标识）
+
+    Returns:
+        备份文件路径；在 MySQL 模式或失败时返回 None。
     """
     try:
         if not is_backup_supported():
@@ -108,8 +127,15 @@ def create_backup(manual: bool = False) -> Optional[str]:
 def restore_backup(backup_filename: str) -> bool:
     """
     从备份恢复数据库
-    :param backup_filename: 备份文件名
-    :return: 是否成功
+
+    Args:
+        backup_filename: 备份文件名（位于备份目录下）
+
+    Returns:
+        是否恢复成功。
+
+    Notes:
+        - 恢复前会先对当前数据库执行一次手动备份，避免误操作导致不可回滚。
     """
     try:
         if not is_backup_supported():
@@ -138,6 +164,9 @@ def restore_backup(backup_filename: str) -> bool:
 def list_backups() -> List[dict]:
     """
     列出所有备份文件
+
+    Returns:
+        备份信息列表（按创建时间倒序），每项包含 filename/size/created_at/type 等字段。
     """
     if not is_backup_supported():
         return []
@@ -170,6 +199,12 @@ def list_backups() -> List[dict]:
 def delete_backup(backup_filename: str) -> bool:
     """
     删除指定备份
+
+    Args:
+        backup_filename: 备份文件名
+
+    Returns:
+        是否删除成功。
     """
     try:
         if not is_backup_supported():
@@ -188,6 +223,9 @@ def delete_backup(backup_filename: str) -> bool:
 def cleanup_old_backups():
     """
     清理超出数量限制的旧备份
+
+    Notes:
+        - 会保留最近的 `MAX_BACKUPS` 个备份文件，多余的从最旧开始删除。
     """
     if not is_backup_supported():
         return
@@ -200,7 +238,15 @@ def cleanup_old_backups():
 
 
 def format_size(size_bytes: int) -> str:
-    """格式化文件大小"""
+    """
+    将字节数转换为更友好的字符串表示。
+
+    Args:
+        size_bytes: 文件大小（字节）
+
+    Returns:
+        格式化后的字符串（B/KB/MB/GB/TB）。
+    """
     for unit in ['B', 'KB', 'MB', 'GB']:
         if size_bytes < 1024:
             return f"{size_bytes:.1f} {unit}"
@@ -211,7 +257,13 @@ def format_size(size_bytes: int) -> str:
 # ==================== 自动备份 ====================
 
 def _backup_worker():
-    """备份工作线程"""
+    """
+    自动备份工作线程。
+
+    Notes:
+        - 线程以秒为粒度睡眠，便于在停止时更快退出。
+        - 达到间隔后触发一次自动备份。
+    """
     global _backup_running
     
     print(f"[Backup] 自动备份已启动，间隔: {BACKUP_INTERVAL // 3600} 小时")
@@ -228,7 +280,12 @@ def _backup_worker():
 
 
 def start_auto_backup():
-    """启动自动备份"""
+    """
+    启动自动备份线程，并在启动时立即执行一次自动备份。
+
+    Notes:
+        - 若已在运行，会直接返回。
+    """
     global _backup_thread, _backup_running
     
     if _backup_running:
@@ -244,14 +301,23 @@ def start_auto_backup():
 
 
 def stop_auto_backup():
-    """停止自动备份"""
+    """
+    停止自动备份线程（通过标志位让工作线程退出）。
+    """
     global _backup_running
     _backup_running = False
     print("[Backup] 自动备份已停止")
 
 
 def get_backup_status() -> dict:
-    """获取备份状态"""
+    """
+    获取备份系统状态摘要（用于管理后台展示）。
+
+    Returns:
+        状态字典，包含是否启用自动备份、备份数量、总大小、最后备份时间等。
+        MySQL 模式会返回 `managed_by=rds` 等提示字段。
+        BACKUP_ENABLED 关闭时会返回 `managed_by=disabled`。
+    """
     if not _backup_enabled():
         return {
             "auto_backup_enabled": False,
@@ -291,7 +357,12 @@ def get_backup_status() -> dict:
 # ==================== 初始化 ====================
 
 def init_backup_system():
-    """初始化备份系统"""
+    """
+    初始化备份系统：确保备份目录存在并启动自动备份。
+
+    Notes:
+        - MySQL 模式下不会启用文件备份。
+    """
     if not _backup_enabled():
         print("[Backup] 备份已通过 BACKUP_ENABLED 禁用")
         return
