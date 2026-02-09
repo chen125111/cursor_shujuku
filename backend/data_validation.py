@@ -1,5 +1,10 @@
 """
 数据校验模块 - 导入时自动校验数据有效性
+
+本模块的职责：
+- 对单条/批量记录进行字段范围、必填项、类型等校验
+- 提供“软提示”机制：不阻止写入，但提醒可能的异常值（如压力偏高、组分和偏差较大）
+- 提供数据清洗函数：统一将输入转换为 float 并填充默认值
 """
 
 import re
@@ -151,7 +156,17 @@ def validate_pattern(value: str, pattern: str) -> bool:
 
 
 def validate_sum(values: List[float], expected_sum: float, tolerance: float = 0.01) -> bool:
-    """总和校验（用于摩尔分数之和应为1）"""
+    """
+    总和校验（用于摩尔分数之和应接近 1.0）。
+
+    Args:
+        values: 数值列表
+        expected_sum: 期望总和（通常为 1.0）
+        tolerance: 允许误差
+
+    Returns:
+        是否在容差范围内。
+    """
     try:
         total = sum(float(v) for v in values if v is not None)
         return abs(total - expected_sum) <= tolerance
@@ -165,6 +180,19 @@ def validate_record(record: Dict[str, Any], rules: List[ValidationRule] = None) 
     """
     校验单条记录
     返回: (是否有效, 错误列表)
+
+    Args:
+        record: 单条记录字典（字段名为数据库字段）
+        rules: 校验规则列表；不传则使用默认 `GAS_MIXTURE_RULES`
+
+    Returns:
+        (is_valid, errors)
+        - is_valid: 是否通过校验
+        - errors: 错误信息列表（可直接拼接给用户）
+
+    Notes:
+        - 本函数会额外检查：7 个组分摩尔分数之和是否接近 1.0
+        - 硬阈值（SUM_HARD_TOLERANCE）超出会视为错误
     """
     if rules is None:
         rules = GAS_MIXTURE_RULES
@@ -222,6 +250,17 @@ def validate_partial_record(record: Dict[str, Any], rules: List[ValidationRule] 
     """
     校验部分字段（用于更新场景）
     仅校验提供的字段，忽略 required 规则。
+
+    Args:
+        record: 待更新字段字典（只包含部分字段）
+        rules: 校验规则列表；不传则使用默认 `GAS_MIXTURE_RULES`
+
+    Returns:
+        (is_valid, errors)
+
+    Notes:
+        - 组分总和校验仅在“全部 7 个组分字段都在更新字典中”时触发，
+          以避免更新单个组分时无法判断总和是否合理的问题。
     """
     if rules is None:
         rules = GAS_MIXTURE_RULES
@@ -274,6 +313,13 @@ def validate_batch(records: List[Dict[str, Any]], rules: List[ValidationRule] = 
         'invalid_count': 无效数,
         'errors': [(行号, 错误列表), ...]
     }
+
+    Args:
+        records: 记录列表
+        rules: 校验规则列表；不传则使用默认 `GAS_MIXTURE_RULES`
+
+    Returns:
+        汇总结果字典（错误最多返回 50 条，避免响应过大）。
     """
     if rules is None:
         rules = GAS_MIXTURE_RULES
@@ -301,7 +347,21 @@ def validate_batch(records: List[Dict[str, Any]], rules: List[ValidationRule] = 
 
 
 def get_soft_warnings(record: Dict[str, Any], pressure_threshold: float = PRESSURE_SOFT_MAX) -> List[str]:
-    """软性提示（不阻止保存）"""
+    """
+    生成“软性提示”（不阻止保存/写入）。
+
+    Args:
+        record: 单条记录字典
+        pressure_threshold: 压力软阈值（默认 `PRESSURE_SOFT_MAX`）
+
+    Returns:
+        软提示文本列表。
+
+    Notes:
+        当前软提示包括：
+        - 压力高于阈值（可能为异常值）
+        - 组分总和与 1.0 的偏差处于“软阈值-硬阈值”之间（提醒检查）
+    """
     warnings = []
     try:
         pressure = record.get('pressure')
@@ -326,7 +386,16 @@ def get_soft_warnings(record: Dict[str, Any], pressure_threshold: float = PRESSU
 
 
 def count_soft_warnings(records: List[Dict[str, Any]], pressure_threshold: float = PRESSURE_SOFT_MAX) -> int:
-    """统计软性提示数量"""
+    """
+    统计记录列表中触发“压力软提示”的条数。
+
+    Args:
+        records: 记录列表
+        pressure_threshold: 压力软阈值
+
+    Returns:
+        触发压力软提示的记录数量。
+    """
     count = 0
     for record in records:
         if not record:
@@ -348,6 +417,12 @@ def clean_record(record: Dict[str, Any]) -> Dict[str, Any]:
     - 转换数据类型
     - 填充默认值
     - 去除空白
+
+    Args:
+        record: 原始输入记录（可能包含字符串、None、空白等）
+
+    Returns:
+        清洗后的记录（所有数值字段转换为 float；缺失/无效填 0.0）。
     """
     cleaned = {}
     
@@ -370,14 +445,27 @@ def clean_record(record: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def clean_batch(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """批量清洗记录"""
+    """
+    批量清洗记录（逐条调用 `clean_record`）。
+
+    Args:
+        records: 原始记录列表
+
+    Returns:
+        清洗后的记录列表。
+    """
     return [clean_record(r) for r in records]
 
 
 # ==================== 校验规则管理 ====================
 
 def get_validation_rules() -> List[Dict]:
-    """获取当前校验规则（用于前端展示）"""
+    """
+    获取当前校验规则（用于前端展示/动态表单）。
+
+    Returns:
+        规则列表（dict 形式），包含 field/type/params/message 等字段。
+    """
     return [
         {
             'field': rule.field,
@@ -390,7 +478,12 @@ def get_validation_rules() -> List[Dict]:
 
 
 def get_field_constraints() -> Dict[str, Dict]:
-    """获取字段约束（用于前端表单验证）"""
+    """
+    获取字段约束（用于前端表单验证/输入组件配置）。
+
+    Returns:
+        字段约束字典：key 为字段名，value 为类型、范围、单位、展示标签等。
+    """
     return {
         'temperature': {
             'type': 'number',
