@@ -7,6 +7,8 @@
     
     <!-- Chart.js 数据可视化库 -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- jsPDF 导出库 -->
+    <script src="https://cdn.jsdelivr.net/npm/jspdf@latest/dist/jspdf.umd.min.js"></script>
     
     <style>
         * {
@@ -532,6 +534,208 @@
                 font-size: 20px;
             }
         }
+
+        /* 查询工具区 */
+        .tools-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 16px;
+        }
+
+        .tool-panel {
+            background: rgba(15, 23, 42, 0.6);
+            border: 1px solid rgba(71, 85, 105, 0.3);
+            border-radius: 12px;
+            padding: 16px;
+            min-height: 220px;
+        }
+
+        .panel-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 12px;
+        }
+
+        .panel-header h3 {
+            font-size: 14px;
+            color: #e2e8f0;
+        }
+
+        .item-list {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            max-height: 280px;
+            overflow-y: auto;
+            padding-right: 4px;
+        }
+
+        .item-card {
+            border: 1px solid rgba(71, 85, 105, 0.35);
+            border-radius: 10px;
+            padding: 10px;
+            background: rgba(15, 23, 42, 0.5);
+        }
+
+        .item-title {
+            font-size: 13px;
+            font-weight: 600;
+            color: #f1f5f9;
+            margin-bottom: 4px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .item-meta {
+            font-size: 12px;
+            color: #94a3b8;
+            line-height: 1.5;
+        }
+
+        .item-actions {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-top: 8px;
+        }
+
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            padding: 2px 8px;
+            border-radius: 999px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+
+        .badge-success {
+            background: rgba(34, 197, 94, 0.2);
+            color: #86efac;
+        }
+
+        .badge-warn {
+            background: rgba(249, 115, 22, 0.2);
+            color: #fdba74;
+        }
+
+        .badge-error {
+            background: rgba(248, 113, 113, 0.2);
+            color: #fecaca;
+        }
+
+        .badge-info {
+            background: rgba(59, 130, 246, 0.2);
+            color: #93c5fd;
+        }
+
+        .btn-mini {
+            padding: 6px 10px;
+            border-radius: 8px;
+            border: 1px solid transparent;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 600;
+            background: rgba(59, 130, 246, 0.2);
+            color: #93c5fd;
+            transition: all 0.2s;
+        }
+
+        .btn-mini:hover {
+            border-color: #3b82f6;
+            color: #e2e8f0;
+        }
+
+        .btn-mini.secondary {
+            background: rgba(148, 163, 184, 0.15);
+            color: #cbd5f5;
+        }
+
+        .btn-mini.danger {
+            background: rgba(248, 113, 113, 0.2);
+            color: #fecaca;
+        }
+
+        .result-actions {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            margin-top: 16px;
+            flex-wrap: wrap;
+        }
+
+        .batch-input textarea {
+            width: 100%;
+            min-height: 120px;
+            padding: 12px 14px;
+            background: rgba(15, 23, 42, 0.8);
+            border: 1px solid #334155;
+            border-radius: 10px;
+            color: #f1f5f9;
+            font-size: 14px;
+            resize: vertical;
+        }
+
+        .batch-actions {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-top: 12px;
+        }
+
+        .batch-status {
+            margin-top: 10px;
+            font-size: 12px;
+            color: #94a3b8;
+        }
+
+        .batch-summary {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 12px;
+            margin-top: 16px;
+        }
+
+        .batch-summary .stat-card {
+            padding: 14px;
+        }
+
+        .batch-table {
+            width: 100%;
+            margin-top: 16px;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+
+        .batch-table th,
+        .batch-table td {
+            padding: 10px 12px;
+            border-bottom: 1px solid rgba(71, 85, 105, 0.3);
+            text-align: left;
+        }
+
+        .batch-table th {
+            color: #94a3b8;
+            font-weight: 600;
+        }
+
+        .batch-table tr:hover td {
+            background: rgba(59, 130, 246, 0.08);
+        }
+
+        .pdf-actions {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-top: 12px;
+        }
+
+        @media (max-width: 900px) {
+            .tools-grid {
+                grid-template-columns: 1fr;
+            }
+        }
     </style>
 </head>
 <body>
@@ -584,6 +788,52 @@
         <!-- 结果展示 -->
         <div class="card result-card" id="resultCard">
             <div id="resultContent"></div>
+        </div>
+
+        <!-- 查询历史与收藏 -->
+        <div class="card" id="historyCard">
+            <div class="card-title">
+                <span class="step">🗂️</span>
+                <span>查询历史与收藏</span>
+            </div>
+            <div class="tools-grid">
+                <div class="tool-panel">
+                    <div class="panel-header">
+                        <h3>查询历史</h3>
+                        <button class="btn-mini secondary" onclick="clearQueryHistory()">清空</button>
+                    </div>
+                    <div class="item-list" id="queryHistoryList"></div>
+                </div>
+                <div class="tool-panel">
+                    <div class="panel-header">
+                        <h3>收藏夹</h3>
+                        <button class="btn-mini secondary" onclick="clearFavorites()">清空</button>
+                    </div>
+                    <div class="item-list" id="favoriteList"></div>
+                </div>
+            </div>
+            <div class="hint-box" id="historyHint">
+                💡 查询历史和收藏保存在本地浏览器，可用于快速复现查询。
+            </div>
+        </div>
+
+        <!-- 批量查询与对比 -->
+        <div class="card" id="batchCard">
+            <div class="card-title">
+                <span class="step">4</span>
+                <span>批量查询与对比</span>
+            </div>
+            <div class="batch-input">
+                <textarea id="batchTemperatures" placeholder="输入多个温度（例如: 270, 275, 280 或每行一个温度）"></textarea>
+                <div class="batch-actions">
+                    <button class="btn-mini" id="batchQueryBtn" onclick="runBatchQuery()">🚀 批量查询</button>
+                    <button class="btn-mini secondary" onclick="clearBatchInput()">清空</button>
+                    <button class="btn-mini secondary" onclick="exportBatchPdf()">📄 导出 PDF</button>
+                </div>
+                <div class="batch-status" id="batchStatus"></div>
+            </div>
+            <div class="batch-summary" id="batchSummary" style="display: none;"></div>
+            <div id="batchResults"></div>
         </div>
 
         <!-- 数据可视化 -->
@@ -669,15 +919,36 @@
             'x_h2s': { name: '硫化氢', formula: 'H₂S', color: 'color-h2s', dot: 'dot-h2s' },
             'x_ic4h10': { name: '异丁烷', formula: 'i-C₄H₁₀', color: 'color-ic4h10', dot: 'dot-ic4h10' }
         };
+        const COMPONENTS_ASCII = {
+            'x_ch4': 'CH4',
+            'x_c2h6': 'C2H6',
+            'x_c3h8': 'C3H8',
+            'x_co2': 'CO2',
+            'x_n2': 'N2',
+            'x_h2s': 'H2S',
+            'x_ic4h10': 'i-C4H10'
+        };
 
         const API_BASE = '/api';
 
         let selectedComponents = [];
         let availableComponents = Object.keys(COMPONENTS);
         let componentRanges = {};
+        const STORAGE_KEYS = {
+            history: 'hydrate_query_history',
+            favorites: 'hydrate_query_favorites'
+        };
+        const HISTORY_LIMIT = 30;
+        const FAVORITE_LIMIT = 30;
+        const BATCH_LIMIT = 50;
+        let queryHistory = [];
+        let favorites = [];
+        let lastQueryResult = null;
+        let lastBatchResult = null;
 
         document.addEventListener('DOMContentLoaded', () => {
             renderComponentButtons();
+            initQueryTools();
         });
 
         function renderComponentButtons() {
@@ -873,12 +1144,47 @@
                 const data = await res.json();
                 
                 if (data.success && data.data) {
+                    lastQueryResult = {
+                        temperature,
+                        result: data.data,
+                        components: [...selectedComponents],
+                        createdAt: new Date().toISOString()
+                    };
                     showResult(data.data, temperature);
+                    addHistoryEntry({
+                        id: generateId('single'),
+                        type: 'single',
+                        status: 'success',
+                        temperature,
+                        components: [...selectedComponents],
+                        result: data.data,
+                        createdAt: new Date().toISOString()
+                    });
                 } else {
                     showNoData(data.message);
+                    lastQueryResult = null;
+                    addHistoryEntry({
+                        id: generateId('single'),
+                        type: 'single',
+                        status: 'no-data',
+                        temperature,
+                        components: [...selectedComponents],
+                        message: data.message || '未找到匹配数据',
+                        createdAt: new Date().toISOString()
+                    });
                 }
             } catch (error) {
                 showError('查询失败，请稍后重试');
+                lastQueryResult = null;
+                addHistoryEntry({
+                    id: generateId('single'),
+                    type: 'single',
+                    status: 'error',
+                    temperature,
+                    components: [...selectedComponents],
+                    message: error.message || '查询失败',
+                    createdAt: new Date().toISOString()
+                });
             }
         }
 
@@ -906,6 +1212,10 @@
                             <span class="result-label">组分详情</span>
                             <span class="result-data">${formatComposition(result.composition)}</span>
                         </div>
+                    </div>
+                    <div class="result-actions">
+                        <button class="btn-mini" onclick="addCurrentToFavorites()">⭐ 收藏结果</button>
+                        <button class="btn-mini secondary" onclick="exportResultPdf()">📄 导出 PDF</button>
                     </div>
                 </div>
             `;
@@ -943,6 +1253,746 @@
                 </div>
             `;
             document.getElementById('resultCard').classList.add('show');
+        }
+
+        // ==================== 查询历史与收藏 ====================
+        function initQueryTools() {
+            queryHistory = loadStoredList(STORAGE_KEYS.history);
+            favorites = loadStoredList(STORAGE_KEYS.favorites);
+            renderHistoryList();
+            renderFavorites();
+            setHistoryHint('💡 查询历史和收藏保存在本地浏览器，可用于快速复现查询。');
+        }
+
+        function loadStoredList(key) {
+            try {
+                const raw = localStorage.getItem(key);
+                if (!raw) return [];
+                const parsed = JSON.parse(raw);
+                return Array.isArray(parsed) ? parsed : [];
+            } catch (error) {
+                console.error('读取本地存储失败:', error);
+                return [];
+            }
+        }
+
+        function saveStoredList(key, list) {
+            try {
+                localStorage.setItem(key, JSON.stringify(list));
+            } catch (error) {
+                console.error('保存本地存储失败:', error);
+            }
+        }
+
+        function generateId(prefix) {
+            return `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
+        }
+
+        function escapeHtml(value) {
+            if (value === null || value === undefined) return '';
+            return String(value)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        function formatComponents(components, useAscii = false) {
+            return (components || [])
+                .map(key => {
+                    if (useAscii) return COMPONENTS_ASCII[key] || key;
+                    return COMPONENTS[key] ? COMPONENTS[key].formula : key;
+                })
+                .join(' + ');
+        }
+
+        function formatTime(value) {
+            if (!value) return '';
+            const date = new Date(value);
+            if (Number.isNaN(date.getTime())) return '';
+            return date.toLocaleString();
+        }
+
+        function setHistoryHint(text, type = 'info') {
+            const hint = document.getElementById('historyHint');
+            if (!hint) return;
+            hint.textContent = text;
+            if (type === 'error') {
+                hint.style.color = '#fecaca';
+            } else if (type === 'success') {
+                hint.style.color = '#86efac';
+            } else {
+                hint.style.color = '#93c5fd';
+            }
+        }
+
+        function addHistoryEntry(entry) {
+            queryHistory.unshift(entry);
+            if (queryHistory.length > HISTORY_LIMIT) {
+                queryHistory = queryHistory.slice(0, HISTORY_LIMIT);
+            }
+            saveStoredList(STORAGE_KEYS.history, queryHistory);
+            renderHistoryList();
+        }
+
+        function clearQueryHistory() {
+            queryHistory = [];
+            saveStoredList(STORAGE_KEYS.history, queryHistory);
+            renderHistoryList();
+            setHistoryHint('已清空查询历史', 'success');
+        }
+
+        function removeHistoryEntry(entryId) {
+            queryHistory = queryHistory.filter(item => item.id !== entryId);
+            saveStoredList(STORAGE_KEYS.history, queryHistory);
+            renderHistoryList();
+        }
+
+        function getStatusBadge(status) {
+            switch (status) {
+                case 'success':
+                    return '<span class="badge badge-success">成功</span>';
+                case 'no-data':
+                    return '<span class="badge badge-warn">无数据</span>';
+                case 'error':
+                    return '<span class="badge badge-error">失败</span>';
+                case 'batch':
+                    return '<span class="badge badge-info">批量</span>';
+                default:
+                    return '<span class="badge badge-info">记录</span>';
+            }
+        }
+
+        function renderHistoryList() {
+            const container = document.getElementById('queryHistoryList');
+            if (!container) return;
+            if (queryHistory.length === 0) {
+                container.innerHTML = '<div class="item-meta">暂无历史记录</div>';
+                return;
+            }
+
+            container.innerHTML = queryHistory.map(entry => {
+                if (entry.type === 'batch') {
+                    const batch = entry.batch || {};
+                    const temperatures = batch.temperatures || [];
+                    const results = batch.results || [];
+                    const summary = batch.summary || computeBatchSummary(results);
+                    const successCount = summary.successCount || 0;
+                    const rangeText = summary.hasData
+                        ? `${summary.minPressure.toFixed(3)}-${summary.maxPressure.toFixed(3)} MPa`
+                        : '无可用结果';
+                    return `
+                        <div class="item-card">
+                            <div class="item-title">${getStatusBadge('batch')} 批量查询</div>
+                            <div class="item-meta">
+                                组分：${escapeHtml(formatComponents(entry.components))}
+                                <br>数量：${temperatures.length} 条，成功 ${successCount} 条
+                                <br>压力范围：${escapeHtml(rangeText)}
+                                <br>时间：${escapeHtml(formatTime(entry.createdAt))}
+                            </div>
+                            <div class="item-actions">
+                                <button class="btn-mini" onclick="applyBatchFromHistory('${entry.id}')">填入批量</button>
+                                <button class="btn-mini secondary" onclick="exportBatchPdfFromHistory('${entry.id}')">PDF</button>
+                                <button class="btn-mini danger" onclick="removeHistoryEntry('${entry.id}')">删除</button>
+                            </div>
+                        </div>
+                    `;
+                }
+
+                const pressureText = entry.status === 'success' && entry.result
+                    ? `压力 ${entry.result.pressure.toFixed(3)} MPa · 匹配温度 ${entry.result.temperature.toFixed(2)} K`
+                    : escapeHtml(entry.message || '未找到匹配数据');
+
+                const hasFavorite = isFavorite(entry.components, entry.temperature);
+                return `
+                    <div class="item-card">
+                        <div class="item-title">${getStatusBadge(entry.status)} 单次查询</div>
+                        <div class="item-meta">
+                            组分：${escapeHtml(formatComponents(entry.components))}
+                            <br>温度：${entry.temperature} K
+                            <br>${escapeHtml(pressureText)}
+                            <br>时间：${escapeHtml(formatTime(entry.createdAt))}
+                        </div>
+                        <div class="item-actions">
+                            <button class="btn-mini" onclick="rerunHistoryQuery('${entry.id}')">重新查询</button>
+                            ${entry.status === 'success' && !hasFavorite
+                                ? `<button class="btn-mini secondary" onclick="addFavoriteFromHistory('${entry.id}')">收藏</button>`
+                                : ''}
+                            ${entry.status === 'success'
+                                ? `<button class="btn-mini secondary" onclick="exportSinglePdfFromHistory('${entry.id}')">PDF</button>`
+                                : ''}
+                            <button class="btn-mini danger" onclick="removeHistoryEntry('${entry.id}')">删除</button>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function addCurrentToFavorites() {
+            if (!lastQueryResult || !lastQueryResult.result) {
+                setHistoryHint('当前没有可收藏的结果', 'error');
+                return;
+            }
+            const note = window.prompt('为收藏添加备注（可选）', '');
+            if (note === null) return;
+            const entry = {
+                id: generateId('fav'),
+                components: [...lastQueryResult.components],
+                temperature: lastQueryResult.temperature,
+                result: lastQueryResult.result,
+                note: note.trim(),
+                createdAt: new Date().toISOString()
+            };
+            if (isFavorite(entry.components, entry.temperature)) {
+                setHistoryHint('该查询已在收藏中', 'error');
+                return;
+            }
+            favorites.unshift(entry);
+            if (favorites.length > FAVORITE_LIMIT) {
+                favorites = favorites.slice(0, FAVORITE_LIMIT);
+            }
+            saveStoredList(STORAGE_KEYS.favorites, favorites);
+            renderFavorites();
+            setHistoryHint('已收藏当前结果', 'success');
+        }
+
+        function addFavoriteFromHistory(entryId) {
+            const entry = queryHistory.find(item => item.id === entryId);
+            if (!entry || entry.status !== 'success') {
+                setHistoryHint('该历史记录无法收藏', 'error');
+                return;
+            }
+            const note = window.prompt('为收藏添加备注（可选）', '');
+            if (note === null) return;
+            const favorite = {
+                id: generateId('fav'),
+                components: [...entry.components],
+                temperature: entry.temperature,
+                result: entry.result,
+                note: note.trim(),
+                createdAt: new Date().toISOString()
+            };
+            if (isFavorite(favorite.components, favorite.temperature)) {
+                setHistoryHint('该查询已在收藏中', 'error');
+                return;
+            }
+            favorites.unshift(favorite);
+            if (favorites.length > FAVORITE_LIMIT) {
+                favorites = favorites.slice(0, FAVORITE_LIMIT);
+            }
+            saveStoredList(STORAGE_KEYS.favorites, favorites);
+            renderFavorites();
+            setHistoryHint('已收藏历史结果', 'success');
+        }
+
+        function isFavorite(components, temperature) {
+            return favorites.some(item =>
+                Number(item.temperature) === Number(temperature)
+                && JSON.stringify(item.components || []) === JSON.stringify(components || [])
+            );
+        }
+
+        function clearFavorites() {
+            favorites = [];
+            saveStoredList(STORAGE_KEYS.favorites, favorites);
+            renderFavorites();
+            setHistoryHint('已清空收藏夹', 'success');
+        }
+
+        function removeFavorite(entryId) {
+            favorites = favorites.filter(item => item.id !== entryId);
+            saveStoredList(STORAGE_KEYS.favorites, favorites);
+            renderFavorites();
+        }
+
+        function renderFavorites() {
+            const container = document.getElementById('favoriteList');
+            if (!container) return;
+            if (favorites.length === 0) {
+                container.innerHTML = '<div class="item-meta">暂无收藏记录</div>';
+                return;
+            }
+            container.innerHTML = favorites.map(entry => `
+                <div class="item-card">
+                    <div class="item-title">
+                        <span class="badge badge-success">收藏</span>
+                        ${escapeHtml(entry.note || '收藏结果')}
+                    </div>
+                    <div class="item-meta">
+                        组分：${escapeHtml(formatComponents(entry.components))}
+                        <br>温度：${entry.temperature} K
+                        <br>压力：${entry.result ? entry.result.pressure.toFixed(3) : '--'} MPa
+                        <br>时间：${escapeHtml(formatTime(entry.createdAt))}
+                    </div>
+                    <div class="item-actions">
+                        <button class="btn-mini" onclick="applyFavorite('${entry.id}')">使用</button>
+                        <button class="btn-mini secondary" onclick="exportFavoritePdf('${entry.id}')">PDF</button>
+                        <button class="btn-mini danger" onclick="removeFavorite('${entry.id}')">删除</button>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        async function applyComponentsForQuery(components) {
+            selectedComponents = [...components];
+            await updateAvailableComponents();
+            renderComponentButtons();
+            await confirmComponents();
+        }
+
+        async function rerunHistoryQuery(entryId) {
+            const entry = queryHistory.find(item => item.id === entryId);
+            if (!entry) return;
+            await applyComponentsForQuery(entry.components);
+            const tempInput = document.getElementById('temperature');
+            if (tempInput) tempInput.value = entry.temperature;
+            await doQuery();
+        }
+
+        async function applyFavorite(entryId) {
+            const entry = favorites.find(item => item.id === entryId);
+            if (!entry) return;
+            await applyComponentsForQuery(entry.components);
+            const tempInput = document.getElementById('temperature');
+            if (tempInput) tempInput.value = entry.temperature;
+            setHistoryHint('已填入收藏条件，可直接点击查询', 'success');
+        }
+
+        async function applyBatchFromHistory(entryId) {
+            const entry = queryHistory.find(item => item.id === entryId);
+            if (!entry || entry.type !== 'batch') return;
+            await applyComponentsForQuery(entry.components);
+            const textarea = document.getElementById('batchTemperatures');
+            if (textarea) {
+                textarea.value = (entry.batch && entry.batch.temperatures || []).join('\n');
+            }
+            document.getElementById('batchCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
+            setBatchStatus('已填入批量温度，可直接点击批量查询', 'success');
+        }
+
+        // ==================== 批量查询与对比 ====================
+        function parseBatchTemperatures(raw) {
+            const parts = raw.split(/[\s,;]+/).map(item => item.trim()).filter(Boolean);
+            const values = [];
+            const seen = new Set();
+            for (const item of parts) {
+                const value = parseFloat(item);
+                if (!Number.isFinite(value)) continue;
+                const key = value.toString();
+                if (seen.has(key)) continue;
+                seen.add(key);
+                values.push(value);
+            }
+            return values;
+        }
+
+        function clearBatchInput() {
+            const textarea = document.getElementById('batchTemperatures');
+            if (textarea) textarea.value = '';
+            document.getElementById('batchResults').innerHTML = '';
+            document.getElementById('batchSummary').style.display = 'none';
+            setBatchStatus('已清空批量输入', 'success');
+            lastBatchResult = null;
+        }
+
+        function setBatchStatus(message, type = 'info') {
+            const status = document.getElementById('batchStatus');
+            if (!status) return;
+            status.textContent = message;
+            if (type === 'error') {
+                status.style.color = '#fecaca';
+            } else if (type === 'success') {
+                status.style.color = '#86efac';
+            } else {
+                status.style.color = '#94a3b8';
+            }
+        }
+
+        async function runBatchQuery() {
+            if (selectedComponents.length === 0) {
+                setBatchStatus('请先选择并确认组分组合', 'error');
+                return;
+            }
+
+            const textarea = document.getElementById('batchTemperatures');
+            const temps = parseBatchTemperatures(textarea ? textarea.value : '');
+            if (temps.length === 0) {
+                setBatchStatus('请输入至少一个有效温度', 'error');
+                return;
+            }
+            if (temps.length > BATCH_LIMIT) {
+                setBatchStatus(`批量查询最多支持 ${BATCH_LIMIT} 条温度`, 'error');
+                return;
+            }
+
+            const btn = document.getElementById('batchQueryBtn');
+            if (btn) {
+                btn.disabled = true;
+                btn.textContent = '查询中...';
+            }
+
+            const results = [];
+            for (let i = 0; i < temps.length; i++) {
+                const temp = temps[i];
+                if (temp < 100 || temp > 400) {
+                    results.push({
+                        temperature: temp,
+                        success: false,
+                        status: 'invalid',
+                        message: '温度超出范围(100-400K)'
+                    });
+                    setBatchStatus(`处理中 ${i + 1}/${temps.length}（含无效温度）...`);
+                    continue;
+                }
+                try {
+                    const res = await fetch(`${API_BASE}/query/by-components`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            components: selectedComponents,
+                            temperature: temp
+                        })
+                    });
+                    const data = await res.json();
+                    if (data.success && data.data) {
+                        results.push({
+                            temperature: temp,
+                            success: true,
+                            status: 'success',
+                            pressure: data.data.pressure,
+                            matchedTemperature: data.data.temperature
+                        });
+                    } else {
+                        results.push({
+                            temperature: temp,
+                            success: false,
+                            status: 'no-data',
+                            message: data.message || '未找到匹配数据'
+                        });
+                    }
+                } catch (error) {
+                    results.push({
+                        temperature: temp,
+                        success: false,
+                        status: 'error',
+                        message: error.message || '查询失败'
+                    });
+                }
+                setBatchStatus(`处理中 ${i + 1}/${temps.length}...`);
+            }
+
+            if (btn) {
+                btn.disabled = false;
+                btn.textContent = '🚀 批量查询';
+            }
+
+            const summary = computeBatchSummary(results);
+            lastBatchResult = {
+                components: [...selectedComponents],
+                results: results.map(item => ({
+                    temperature: item.temperature,
+                    pressure: item.pressure || null,
+                    matchedTemperature: item.matchedTemperature || null,
+                    success: item.success,
+                    status: item.status,
+                    message: item.message || ''
+                })),
+                summary,
+                createdAt: new Date().toISOString()
+            };
+
+            renderBatchResults(results, summary);
+            setBatchStatus(`批量查询完成：成功 ${summary.successCount}/${summary.total} 条`, 'success');
+
+            addHistoryEntry({
+                id: generateId('batch'),
+                type: 'batch',
+                status: 'batch',
+                components: [...selectedComponents],
+                batch: {
+                    temperatures: temps,
+                    results: lastBatchResult.results,
+                    summary
+                },
+                createdAt: new Date().toISOString()
+            });
+        }
+
+        function computeBatchSummary(results) {
+            const total = results.length;
+            const successItems = results.filter(item => item.success);
+            if (successItems.length === 0) {
+                return {
+                    hasData: false,
+                    total,
+                    successCount: 0,
+                    minPressure: 0,
+                    maxPressure: 0,
+                    avgPressure: 0,
+                    minTemp: null,
+                    maxTemp: null
+                };
+            }
+            const pressures = successItems.map(item => item.pressure);
+            const minPressure = Math.min(...pressures);
+            const maxPressure = Math.max(...pressures);
+            const avgPressure = pressures.reduce((sum, value) => sum + value, 0) / pressures.length;
+            const minItem = successItems.find(item => item.pressure === minPressure);
+            const maxItem = successItems.find(item => item.pressure === maxPressure);
+            return {
+                hasData: true,
+                total,
+                successCount: successItems.length,
+                minPressure,
+                maxPressure,
+                avgPressure,
+                minTemp: minItem ? minItem.temperature : null,
+                maxTemp: maxItem ? maxItem.temperature : null
+            };
+        }
+
+        function renderBatchResults(results, summary) {
+            const summaryEl = document.getElementById('batchSummary');
+            const resultsEl = document.getElementById('batchResults');
+            if (!summaryEl || !resultsEl) return;
+
+            summaryEl.style.display = 'grid';
+            summaryEl.innerHTML = `
+                <div class="stat-card">
+                    <div class="stat-label">成功/总数</div>
+                    <div class="stat-value">${summary.successCount}/${summary.total}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">压力范围</div>
+                    <div class="stat-value">
+                        ${summary.hasData ? `${summary.minPressure.toFixed(3)}-${summary.maxPressure.toFixed(3)} MPa` : 'N/A'}
+                    </div>
+                    <div class="stat-label">
+                        ${summary.hasData ? `对应温度 ${summary.minTemp.toFixed(1)} / ${summary.maxTemp.toFixed(1)} K` : ''}
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">平均压力</div>
+                    <div class="stat-value">${summary.hasData ? `${summary.avgPressure.toFixed(3)} MPa` : 'N/A'}</div>
+                </div>
+            `;
+
+            const rows = results.map((item, index) => {
+                const statusBadge = item.success
+                    ? '<span class="badge badge-success">成功</span>'
+                    : item.status === 'invalid'
+                        ? '<span class="badge badge-error">无效</span>'
+                        : '<span class="badge badge-warn">无数据</span>';
+                const pressureText = item.success ? item.pressure.toFixed(3) : '--';
+                const matchedText = item.success ? item.matchedTemperature.toFixed(2) : '--';
+                const messageText = item.success ? '匹配成功' : (item.message || '未找到匹配数据');
+                return `
+                    <tr>
+                        <td>${index + 1}</td>
+                        <td>${item.temperature}</td>
+                        <td>${matchedText}</td>
+                        <td>${pressureText}</td>
+                        <td>${statusBadge}</td>
+                        <td>${escapeHtml(messageText)}</td>
+                        <td>
+                            <button class="btn-mini secondary" onclick="applySingleTemperature(${item.temperature})">单次查询</button>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
+
+            resultsEl.innerHTML = `
+                <table class="batch-table">
+                    <thead>
+                        <tr>
+                            <th>#</th>
+                            <th>查询温度(K)</th>
+                            <th>匹配温度(K)</th>
+                            <th>压力(MPa)</th>
+                            <th>状态</th>
+                            <th>说明</th>
+                            <th>操作</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${rows}
+                    </tbody>
+                </table>
+            `;
+        }
+
+        async function applySingleTemperature(temperature) {
+            if (lastBatchResult && lastBatchResult.components) {
+                await applyComponentsForQuery(lastBatchResult.components);
+            }
+            const tempInput = document.getElementById('temperature');
+            if (tempInput) tempInput.value = temperature;
+            await doQuery();
+        }
+
+        // ==================== PDF 导出 ====================
+        function getPdfDoc() {
+            if (!window.jspdf || !window.jspdf.jsPDF) {
+                throw new Error('PDF 导出库未加载');
+            }
+            return new window.jspdf.jsPDF({ unit: 'pt', format: 'a4' });
+        }
+
+        function formatTimeForPdf(value) {
+            if (!value) return '';
+            const date = new Date(value);
+            if (Number.isNaN(date.getTime())) return '';
+            return date.toLocaleString('en-US');
+        }
+
+        function formatCompositionAscii(comp) {
+            if (!comp) return '--';
+            const parts = [];
+            for (const [key, value] of Object.entries(comp)) {
+                if (value > 0.001 && COMPONENTS_ASCII[key]) {
+                    parts.push(`${COMPONENTS_ASCII[key]}: ${(value * 100).toFixed(1)}%`);
+                }
+            }
+            return parts.join(', ') || '--';
+        }
+
+        function exportResultPdf() {
+            if (!lastQueryResult || !lastQueryResult.result) {
+                setHistoryHint('没有可导出的查询结果', 'error');
+                return;
+            }
+            exportSinglePdf(lastQueryResult, 'query-result.pdf');
+        }
+
+        function exportSinglePdfFromHistory(entryId) {
+            const entry = queryHistory.find(item => item.id === entryId);
+            if (!entry || entry.status !== 'success') {
+                setHistoryHint('历史记录无法导出', 'error');
+                return;
+            }
+            exportSinglePdf({
+                temperature: entry.temperature,
+                components: entry.components,
+                result: entry.result,
+                createdAt: entry.createdAt
+            }, 'query-result-history.pdf');
+        }
+
+        function exportFavoritePdf(entryId) {
+            const entry = favorites.find(item => item.id === entryId);
+            if (!entry || !entry.result) {
+                setHistoryHint('收藏记录无法导出', 'error');
+                return;
+            }
+            exportSinglePdf({
+                temperature: entry.temperature,
+                components: entry.components,
+                result: entry.result,
+                createdAt: entry.createdAt
+            }, 'query-favorite.pdf');
+        }
+
+        function exportSinglePdf(payload, filename) {
+            try {
+                const doc = getPdfDoc();
+                let y = 48;
+                doc.setFontSize(16);
+                doc.text('Gas Hydrate Query Result', 40, y);
+                y += 20;
+                doc.setFontSize(11);
+                doc.text(`Generated: ${formatTimeForPdf(payload.createdAt)}`, 40, y);
+                y += 18;
+                doc.text(`Components: ${formatComponents(payload.components, true)}`, 40, y);
+                y += 18;
+                doc.text(`Query Temperature (K): ${payload.temperature}`, 40, y);
+                y += 18;
+                doc.text(`Matched Temperature (K): ${payload.result.temperature.toFixed(2)}`, 40, y);
+                y += 18;
+                doc.text(`Pressure (MPa): ${payload.result.pressure.toFixed(3)}`, 40, y);
+                y += 18;
+                doc.text(`Composition: ${formatCompositionAscii(payload.result.composition)}`, 40, y, { maxWidth: 520 });
+                doc.save(filename || 'query-result.pdf');
+                setHistoryHint('PDF 已生成', 'success');
+            } catch (error) {
+                setHistoryHint(`PDF 导出失败: ${error.message}`, 'error');
+            }
+        }
+
+        function exportBatchPdf() {
+            if (!lastBatchResult || !lastBatchResult.results) {
+                setBatchStatus('没有可导出的批量结果', 'error');
+                return;
+            }
+            exportBatchPdfPayload(lastBatchResult, 'batch-query.pdf');
+        }
+
+        function exportBatchPdfFromHistory(entryId) {
+            const entry = queryHistory.find(item => item.id === entryId);
+            if (!entry || entry.type !== 'batch') {
+                setHistoryHint('批量记录无法导出', 'error');
+                return;
+            }
+            exportBatchPdfPayload({
+                components: entry.components,
+                results: entry.batch ? entry.batch.results : [],
+                summary: entry.batch ? entry.batch.summary : computeBatchSummary(entry.batch ? entry.batch.results : []),
+                createdAt: entry.createdAt
+            }, 'batch-query-history.pdf');
+        }
+
+        function exportBatchPdfPayload(payload, filename) {
+            try {
+                const doc = getPdfDoc();
+                let y = 48;
+                doc.setFontSize(16);
+                doc.text('Batch Query Results', 40, y);
+                y += 20;
+                doc.setFontSize(11);
+                doc.text(`Generated: ${formatTimeForPdf(payload.createdAt)}`, 40, y);
+                y += 18;
+                doc.text(`Components: ${formatComponents(payload.components, true)}`, 40, y);
+                y += 18;
+                const summary = payload.summary || computeBatchSummary(payload.results || []);
+                const rangeText = summary.hasData
+                    ? `${summary.minPressure.toFixed(3)}-${summary.maxPressure.toFixed(3)} MPa`
+                    : 'N/A';
+                doc.text(`Success/Total: ${summary.successCount}/${summary.total}`, 40, y);
+                y += 16;
+                doc.text(`Pressure Range: ${rangeText}`, 40, y);
+                y += 16;
+                doc.text(`Avg Pressure: ${summary.hasData ? summary.avgPressure.toFixed(3) : 'N/A'} MPa`, 40, y);
+                y += 22;
+
+                doc.setFontSize(10);
+                const columns = [40, 90, 160, 250, 330];
+                doc.text('#', columns[0], y);
+                doc.text('Query K', columns[1], y);
+                doc.text('Match K', columns[2], y);
+                doc.text('Pressure', columns[3], y);
+                doc.text('Status', columns[4], y);
+                y += 14;
+
+                const rows = payload.results || [];
+                rows.forEach((item, index) => {
+                    if (y > 760) {
+                        doc.addPage();
+                        y = 48;
+                    }
+                    const statusText = item.success ? 'OK' : (item.status === 'invalid' ? 'INVALID' : item.status === 'error' ? 'ERROR' : 'NO_DATA');
+                    doc.text(String(index + 1), columns[0], y);
+                    doc.text(String(item.temperature), columns[1], y);
+                    doc.text(item.matchedTemperature ? item.matchedTemperature.toFixed(2) : '--', columns[2], y);
+                    doc.text(item.pressure ? item.pressure.toFixed(3) : '--', columns[3], y);
+                    doc.text(statusText, columns[4], y);
+                    y += 14;
+                });
+
+                doc.save(filename || 'batch-query.pdf');
+                setBatchStatus('PDF 已生成', 'success');
+            } catch (error) {
+                setBatchStatus(`PDF 导出失败: ${error.message}`, 'error');
+            }
         }
     </script>
 
