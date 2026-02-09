@@ -46,10 +46,18 @@ def test_query_by_composition_strict_mode(reset_databases: None, sample_record: 
     batch_create_records([sample_record])
 
     # strict_mode=True 时，未输入的组分要求接近 0（会导致不匹配）
-    strict = query_by_composition({"x_ch4": sample_record["x_ch4"]}, tolerance=0.01, strict_mode=True)
+    strict = query_by_composition(
+        {"x_ch4": sample_record["x_ch4"]},
+        tolerance=0.01,
+        strict_mode=True,
+    )
     assert strict == []
 
-    relaxed = query_by_composition({"x_ch4": sample_record["x_ch4"]}, tolerance=0.01, strict_mode=False)
+    relaxed = query_by_composition(
+        {"x_ch4": sample_record["x_ch4"]},
+        tolerance=0.01,
+        strict_mode=False,
+    )
     assert len(relaxed) == 1
     assert relaxed[0]["pressure"] == sample_record["pressure"]
 

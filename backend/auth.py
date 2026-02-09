@@ -2,14 +2,14 @@
 认证模块 - JWT Token 认证和密码加密
 """
 
+import base64
+from datetime import datetime, timedelta
 import hashlib
 import hmac
-import base64
 import json
-import time
 import os
+import time
 from typing import Optional, Dict
-from datetime import datetime, timedelta
 
 from backend.db import open_security_connection
 # ==================== 配置 ====================
