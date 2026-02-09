@@ -9,7 +9,7 @@ import struct
 import time
 import base64
 import os
-from typing import Optional, Tuple
+from typing import Tuple
 
 from backend.db import is_security_mysql, open_security_connection
 

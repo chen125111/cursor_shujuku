@@ -5,15 +5,15 @@ FastAPI 后端服务
 """
 
 from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Header, Depends, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, StreamingResponse, Response
+from fastapi.responses import FileResponse, StreamingResponse, Response, JSONResponse
 from typing import Optional, List
 from pydantic import BaseModel
+import logging
 import os
 import io
 import csv
-import tempfile
 import json
 
 from backend.models import (
@@ -28,7 +28,7 @@ from backend.database import (
 )
 from backend.auth import (
     authenticate_user, create_access_token, get_current_user,
-    hash_password, verify_password, create_user, change_password, list_users,
+    create_user, change_password, list_users,
     get_admin_username, is_admin_configured, is_using_default_secret_key,
     ensure_admin_user, reset_user_password
 )
@@ -39,10 +39,10 @@ from backend.backup import (
 from backend.security import (
     init_security, check_rate_limit, detect_crawler, add_crawler_block,
     record_login, check_login_attempts, record_login_attempt,
-    get_login_logs, create_session, validate_session, revoke_session,
+    get_login_logs, create_session, revoke_session,
     get_user_sessions, revoke_all_user_sessions, validate_password,
     get_password_policy, record_audit_log, get_audit_logs,
-    record_data_history, get_data_history, get_rate_limit_status
+    get_data_history, get_rate_limit_status
 )
 from backend.data_review import (
     find_duplicate_pressure_records, move_duplicates_to_review,
@@ -54,7 +54,7 @@ from backend.totp import (
     verify_user_totp, get_totp_status, regenerate_backup_codes
 )
 from backend.data_validation import (
-    validate_record, validate_batch, clean_record, clean_batch,
+    validate_record, validate_batch, clean_record,
     validate_partial_record,
     get_validation_rules, get_field_constraints, get_soft_warnings,
     count_soft_warnings, PRESSURE_SOFT_MAX
@@ -62,6 +62,9 @@ from backend.data_validation import (
 from backend.config import get_backup_dir, get_cors_origins
 from backend.db import get_connection
 from backend.cache import cached, get_cache, init_cache
+
+
+logger = logging.getLogger(__name__)
 
 # ==================== 认证依赖 ====================
 
@@ -120,6 +123,19 @@ app = FastAPI(
     version="4.0.0"
 )
 
+
+@app.exception_handler(RequestValidationError)
+async def request_validation_exception_handler(request: Request, exc: RequestValidationError):
+    # 保持 FastAPI 默认返回结构，但在此处集中记录
+    logger.info("请求参数校验失败 %s %s: %s", request.method, request.url.path, exc.errors())
+    return JSONResponse(status_code=422, content={"detail": exc.errors()})
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    logger.exception("未处理异常 %s %s", request.method, request.url.path)
+    return JSONResponse(status_code=500, content={"detail": "服务器内部错误"})
+
 # 软提示（不阻止写入）
 def format_soft_warning(warnings: List[str]) -> str:
     if not warnings:
@@ -131,6 +147,13 @@ def format_soft_warning_count(count: int) -> str:
     if count <= 0:
         return ""
     return f"（注意：{count} 条记录压力高于 {PRESSURE_SOFT_MAX:.0f} MPa，可能为异常值）"
+
+
+def invalidate_read_caches() -> None:
+    """写操作后失效统计/图表等读缓存（Redis不可用时自动降级为 no-op）。"""
+    cache = get_cache()
+    if cache and cache.is_connected():
+        cache.clear_pattern("cache:*")
 
 # 配置跨域 (CORS) - 允许前端访问
 cors_origins = get_cors_origins()
@@ -240,13 +263,17 @@ async def api_create_record(data: GasRecordCreate, user: dict = Depends(require_
             raise HTTPException(status_code=400, detail="; ".join(errors))
         warnings = get_soft_warnings(record_payload)
         record_id = create_record(record_payload)
+        invalidate_read_caches()
         return ApiResponse(
             success=True,
             message="创建成功" + format_soft_warning(warnings),
             data={"id": record_id}
         )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("创建记录失败")
+        raise HTTPException(status_code=500, detail="创建失败") from None
 
 
 @app.put("/api/records/{record_id}", response_model=ApiResponse, tags=["Records"])
@@ -272,6 +299,7 @@ async def api_update_record(record_id: int, data: GasRecordUpdate, user: dict = 
     success = update_record(record_id, update_data)
     if not success:
         raise HTTPException(status_code=404, detail="记录不存在")
+    invalidate_read_caches()
     
     warnings = get_soft_warnings(update_data) if "pressure" in update_data else []
     return ApiResponse(success=True, message="更新成功" + format_soft_warning(warnings))
@@ -285,6 +313,7 @@ async def api_delete_record(record_id: int, user: dict = Depends(require_auth)):
     success = delete_record(record_id)
     if not success:
         raise HTTPException(status_code=404, detail="记录不存在")
+    invalidate_read_caches()
     
     return ApiResponse(success=True, message="删除成功")
 
@@ -447,21 +476,21 @@ async def api_query_by_composition(
 # ==================== 图表数据 API ====================
 
 @app.get("/api/chart/temperature", tags=["Chart"])
-async def api_chart_temperature():
+async def api_chart_temperature_legacy():
     """获取温度分布数据（用于图表）"""
     data = get_chart_data('temperature')
     return data
 
 
 @app.get("/api/chart/pressure", tags=["Chart"])
-async def api_chart_pressure():
+async def api_chart_pressure_legacy():
     """获取压力分布数据（用于图表）"""
     data = get_chart_data('pressure')
     return data
 
 
 @app.get("/api/chart/scatter", tags=["Chart"])
-async def api_chart_scatter():
+async def api_chart_scatter_legacy():
     """获取温度-压力散点图数据"""
     data = get_chart_data('scatter')
     return data
@@ -646,7 +675,7 @@ async def api_export_excel(user: dict = Depends(require_auth)):
             headers={"Content-Disposition": "attachment; filename=gas_data_export.xlsx"}
         )
     except ImportError:
-        raise HTTPException(status_code=500, detail="需要安装 pandas 和 openpyxl")
+        raise HTTPException(status_code=500, detail="需要安装 pandas 和 openpyxl") from None
 
 
 @app.post("/api/import", tags=["Import"])
@@ -689,6 +718,7 @@ async def api_import_file(file: UploadFile = File(...), user: dict = Depends(req
 
         # 批量插入
         count = batch_create_records(valid_records)
+        invalidate_read_caches()
         warning_count = count_soft_warnings(valid_records)
         
         return ApiResponse(
@@ -699,8 +729,9 @@ async def api_import_file(file: UploadFile = File(...), user: dict = Depends(req
         
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"导入失败: {str(e)}")
+    except Exception:
+        logger.exception("导入失败")
+        raise HTTPException(status_code=500, detail="导入失败") from None
 
 
 @app.post("/api/import/preview", tags=["Import"])
@@ -747,8 +778,9 @@ async def api_import_preview(file: UploadFile = File(...), user: dict = Depends(
         }
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"预览失败: {str(e)}")
+    except Exception:
+        logger.exception("导入预览失败")
+        raise HTTPException(status_code=500, detail="预览失败") from None
 
 
 def parse_import_content(filename: str, content: bytes):
@@ -1018,7 +1050,7 @@ async def api_totp_enable(request: TOTPSetupRequest, user: dict = Depends(requir
 @app.post("/api/auth/totp/disable", tags=["TOTP"])
 async def api_totp_disable(user: dict = Depends(require_auth)):
     """禁用两步验证"""
-    success = disable_totp(user["username"])
+    disable_totp(user["username"])
     record_audit_log(user["username"], "DISABLE_TOTP")
     return {"success": True, "message": "两步验证已禁用"}
 
@@ -1152,6 +1184,7 @@ async def api_batch_delete(request: BatchDeleteRequest, user: dict = Depends(req
         raise HTTPException(status_code=403, detail="权限不足")
     
     count = batch_delete_records(request.ids)
+    invalidate_read_caches()
     record_audit_log(user["username"], "BATCH_DELETE", "records", None, str(request.ids))
     return {"success": True, "message": f"成功删除 {count} 条记录", "data": {"deleted_count": count}}
 
@@ -1170,6 +1203,7 @@ async def api_batch_update(request: BatchUpdateRequest, user: dict = Depends(req
         raise HTTPException(status_code=400, detail="; ".join(errors))
 
     count = batch_update_records(request.ids, request.updates)
+    invalidate_read_caches()
     record_audit_log(user["username"], "BATCH_UPDATE", "records", None, str(request.ids), str(request.updates))
     warning_note = format_soft_warning(get_soft_warnings(request.updates))
     return {
@@ -1260,6 +1294,7 @@ async def api_move_duplicates(user: dict = Depends(require_auth)):
         raise HTTPException(status_code=403, detail="权限不足")
     
     result = move_duplicates_to_review()
+    invalidate_read_caches()
     record_audit_log(user["username"], "MOVE_DUPLICATES", None, None, None, str(result))
     return {"success": True, "message": f"已移动 {result['moved']} 条记录到待审核区", "data": result}
 
@@ -1317,6 +1352,7 @@ async def api_approve_group(group_id: str, request: ApproveRequest, user: dict =
         raise HTTPException(status_code=403, detail="权限不足")
     
     result = approve_group(group_id, request.selected_ids, user["username"])
+    invalidate_read_caches()
     record_audit_log(user["username"], "APPROVE_GROUP", "review", None, group_id, str(result))
     return {"success": True, "message": f"已审核通过 {result['approved']} 条记录", "data": result}
 
@@ -1336,6 +1372,7 @@ async def api_approve_groups(request: ApproveBatchRequest, user: dict = Depends(
         results.append(result)
         total_approved += result.get("approved", 0)
 
+    invalidate_read_caches()
     record_audit_log(user["username"], "APPROVE_GROUP_BATCH", "review", None, None, str(results))
     return {"success": True, "message": f"批量审核通过 {total_approved} 条记录", "data": results}
 
@@ -1346,7 +1383,7 @@ async def api_reject_group(group_id: str, user: dict = Depends(require_auth)):
     if user["role"] != "admin":
         raise HTTPException(status_code=403, detail="权限不足")
     
-    success = reject_group(group_id, user["username"])
+    reject_group(group_id, user["username"])
     record_audit_log(user["username"], "REJECT_GROUP", "review", None, group_id)
     return {"success": True, "message": "已拒绝该组数据"}
 
@@ -1375,6 +1412,7 @@ async def api_restore_group(group_id: str, user: dict = Depends(require_auth)):
         raise HTTPException(status_code=403, detail="权限不足")
     
     result = restore_group(group_id)
+    invalidate_read_caches()
     return {"success": True, "message": f"已恢复 {result['restored']} 条记录", "data": result}
 
 
@@ -1391,11 +1429,43 @@ async def api_restore_groups(request: GroupBatchRequest, user: dict = Depends(re
         result = restore_group(group_id)
         restored += result.get("restored", 0)
 
+    invalidate_read_caches()
     record_audit_log(user["username"], "RESTORE_GROUP_BATCH", "review", None, None, str(request.group_ids))
     return {"success": True, "message": f"已恢复 {restored} 条记录"}
 
 
 # ==================== 受保护的公开查询 API ====================
+
+PUBLIC_COMPONENT_COLUMNS = ['x_ch4', 'x_c2h6', 'x_c3h8', 'x_co2', 'x_n2', 'x_h2s', 'x_ic4h10']
+PUBLIC_COMPONENT_SET = set(PUBLIC_COMPONENT_COLUMNS)
+
+
+def _validate_component_list(components: List[str]) -> List[str]:
+    """白名单校验，避免将用户输入拼接进 SQL 造成注入风险。"""
+    if not components:
+        return []
+    seen = set()
+    normalized: List[str] = []
+    for comp in components:
+        if comp not in PUBLIC_COMPONENT_SET:
+            raise HTTPException(status_code=400, detail=f"非法组分字段: {comp}")
+        if comp not in seen:
+            normalized.append(comp)
+            seen.add(comp)
+    return normalized
+
+
+def _get_range_pair(ranges: dict, comp: str) -> tuple[float, float]:
+    r = ranges.get(comp)
+    if not isinstance(r, dict):
+        raise HTTPException(status_code=400, detail=f"组分 {comp} 的 ranges 格式不正确")
+    if "min" not in r or "max" not in r:
+        raise HTTPException(status_code=400, detail=f"组分 {comp} 的 ranges 缺少 min/max")
+    try:
+        return float(r["min"]), float(r["max"])
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail=f"组分 {comp} 的 min/max 必须为数字") from None
+
 
 class AvailableComponentsRequest(BaseModel):
     selected: List[str]  # ['x_ch4', 'x_c2h6', ...]
@@ -1410,40 +1480,32 @@ async def api_available_components(request: AvailableComponentsRequest):
     """
     根据已选组分，查询数据库中还有哪些可用的组分组合
     """
-    selected = request.selected
-
-    all_components = ['x_ch4', 'x_c2h6', 'x_c3h8', 'x_co2', 'x_n2', 'x_h2s', 'x_ic4h10']
+    selected = _validate_component_list(request.selected)
     
     try:
         with get_connection(dict_cursor=True) as conn:
             cursor = conn.cursor()
 
             # 构建查询条件：已选组分必须 > 0
-            conditions = []
-            for comp in selected:
-                conditions.append(f"{comp} > 0")
-
+            conditions = [f"{comp} > 0" for comp in selected]
             where_clause = " AND ".join(conditions) if conditions else "1=1"
 
-            # 查询匹配的记录数
-            cursor.execute(f"SELECT COUNT(*) as count FROM gas_mixture WHERE {where_clause}")
+            # 单次聚合查询：匹配数 + 各组分是否可用（避免 N+1 COUNT 查询）
+            select_cols = ["COUNT(*) as match_count"]
+            select_cols.extend(
+                [f"SUM(CASE WHEN {comp} > 0 THEN 1 ELSE 0 END) as {comp}_count" for comp in PUBLIC_COMPONENT_COLUMNS]
+            )
+            cursor.execute(
+                f"SELECT {', '.join(select_cols)} FROM gas_mixture WHERE {where_clause}"
+            )
             row = cursor.fetchone()
-            match_count = row['count'] if row else 0
+            match_count = row["match_count"] if row else 0
 
-            # 查找还能添加哪些组分（在已有条件下，该组分也有 > 0 的记录）
             available = []
-            for comp in all_components:
+            for comp in PUBLIC_COMPONENT_COLUMNS:
                 if comp in selected:
                     continue
-
-                test_conditions = conditions + [f"{comp} > 0"]
-                test_where = " AND ".join(test_conditions)
-
-                cursor.execute(f"SELECT COUNT(*) as count FROM gas_mixture WHERE {test_where}")
-                row = cursor.fetchone()
-                count = row['count'] if row else 0
-
-                if count > 0:
+                if row and (row.get(f"{comp}_count") or 0) > 0:
                     available.append(comp)
 
             return {
@@ -1452,8 +1514,9 @@ async def api_available_components(request: AvailableComponentsRequest):
                 "match_count": match_count
             }
         
-    except Exception as e:
-        return {"success": False, "message": str(e)}
+    except Exception:
+        logger.exception("available components 查询失败")
+        return {"success": False, "message": "查询失败"}
 
 
 class ComponentRangesRequest(BaseModel):
@@ -1464,53 +1527,35 @@ async def api_component_ranges(request: ComponentRangesRequest):
     """
     根据选定的组分，返回数据库中每个组分的实际区间范围
     """
-    components = request.components
-
-    all_components = ['x_ch4', 'x_c2h6', 'x_c3h8', 'x_co2', 'x_n2', 'x_h2s', 'x_ic4h10']
+    components = _validate_component_list(request.components)
     
     try:
         with get_connection(dict_cursor=True) as conn:
             cursor = conn.cursor()
         
             # 构建查询条件：已选组分必须 > 0，未选组分必须接近0
-            conditions = []
-            for comp in components:
-                conditions.append(f"{comp} > 0")
-            for comp in all_components:
-                if comp not in components:
-                    conditions.append(f"{comp} <= 0.02")
-
+            conditions = [f"{comp} > 0" for comp in components]
+            conditions.extend([f"{comp} <= 0.02" for comp in PUBLIC_COMPONENT_COLUMNS if comp not in components])
             where_clause = " AND ".join(conditions) if conditions else "1=1"
 
-            # 查询每个组分的min和max
-            ranges = {}
-            for comp in components:
-                cursor.execute(
-                    f"SELECT MIN({comp}) as min_val, MAX({comp}) as max_val FROM gas_mixture WHERE {where_clause}"
-                )
-                row = cursor.fetchone()
-                if row and row['min_val'] is not None:
-                    ranges[comp] = {
-                        'min': row['min_val'],
-                        'max': row['max_val']
-                    }
-
-            # 查询总记录数
-            cursor.execute(f"SELECT COUNT(*) as count FROM gas_mixture WHERE {where_clause}")
+            # 单次聚合：所有组分 min/max + 温度范围 + 总数
+            select_cols = ["COUNT(*) as total_records", "MIN(temperature) as min_temp", "MAX(temperature) as max_temp"]
+            select_cols.extend([f"MIN({c}) as {c}_min, MAX({c}) as {c}_max" for c in PUBLIC_COMPONENT_COLUMNS])
+            cursor.execute(f"SELECT {', '.join(select_cols)} FROM gas_mixture WHERE {where_clause}")
             row = cursor.fetchone()
-            total_records = row['count'] if row else 0
 
-            # 查询温度范围
-            cursor.execute(
-                f"SELECT MIN(temperature) as min_temp, MAX(temperature) as max_temp FROM gas_mixture WHERE {where_clause}"
-            )
-            temp_row = cursor.fetchone()
+            total_records = row["total_records"] if row else 0
+            ranges = {}
+            if row:
+                for comp in components:
+                    min_val = row.get(f"{comp}_min")
+                    max_val = row.get(f"{comp}_max")
+                    if min_val is not None:
+                        ranges[comp] = {"min": min_val, "max": max_val}
+
             temp_range = None
-            if temp_row and temp_row['min_temp'] is not None:
-                temp_range = {
-                    'min': temp_row['min_temp'],
-                    'max': temp_row['max_temp']
-                }
+            if row and row.get("min_temp") is not None:
+                temp_range = {"min": row["min_temp"], "max": row["max_temp"]}
 
             return {
                 "success": True,
@@ -1519,8 +1564,9 @@ async def api_component_ranges(request: ComponentRangesRequest):
                 "temp_range": temp_range
             }
         
-    except Exception as e:
-        return {"success": False, "message": str(e)}
+    except Exception:
+        logger.exception("component ranges 查询失败")
+        return {"success": False, "message": "查询失败"}
 
 
 class QueryByComponentsRequest(BaseModel):
@@ -1532,22 +1578,16 @@ async def api_query_by_components(request: QueryByComponentsRequest):
     """
     根据组分组合和温度查询相平衡压力
     """
-    components = request.components
+    components = _validate_component_list(request.components)
     temperature = request.temperature
 
-    all_components = ['x_ch4', 'x_c2h6', 'x_c3h8', 'x_co2', 'x_n2', 'x_h2s', 'x_ic4h10']
-    
     try:
         with get_connection(dict_cursor=True) as conn:
             cursor = conn.cursor()
 
             # 构建查询条件：已选组分 > 0，未选组分 <= 0.02
-            conditions = []
-            for comp in components:
-                conditions.append(f"{comp} > 0")
-            for comp in all_components:
-                if comp not in components:
-                    conditions.append(f"{comp} <= 0.02")
+            conditions = [f"{comp} > 0" for comp in components]
+            conditions.extend([f"{comp} <= 0.02" for comp in PUBLIC_COMPONENT_COLUMNS if comp not in components])
 
             # 温度范围 ±5K
             conditions.append("ABS(temperature - ?) <= 5")
@@ -1555,7 +1595,7 @@ async def api_query_by_components(request: QueryByComponentsRequest):
             where_clause = " AND ".join(conditions)
 
             query = f"""
-                SELECT temperature, pressure, {', '.join(all_components)}
+                SELECT temperature, pressure, {', '.join(PUBLIC_COMPONENT_COLUMNS)}
                 FROM gas_mixture
                 WHERE {where_clause}
                 ORDER BY ABS(temperature - ?)
@@ -1567,7 +1607,7 @@ async def api_query_by_components(request: QueryByComponentsRequest):
 
             if row:
                 composition = {}
-                for comp in all_components:
+                for comp in PUBLIC_COMPONENT_COLUMNS:
                     composition[comp] = row[comp]
 
                 return {
@@ -1583,8 +1623,9 @@ async def api_query_by_components(request: QueryByComponentsRequest):
                 "message": "在指定的温度范围内未找到数据"
             }
             
-    except Exception as e:
-        return {"success": False, "message": str(e)}
+    except Exception:
+        logger.exception("query by components 查询失败")
+        return {"success": False, "message": "查询失败"}
 
 
 @app.post("/api/query/range", tags=["Public Query"])
@@ -1592,12 +1633,10 @@ async def api_range_query(request: RangeQueryRequest):
     """
     根据组分范围和温度查询相平衡压力
     """
-    components = request.components
+    components = _validate_component_list(request.components)
     ranges = request.ranges
     temperature = request.temperature
 
-    all_components = ['x_ch4', 'x_c2h6', 'x_c3h8', 'x_co2', 'x_n2', 'x_h2s', 'x_ic4h10']
-    
     try:
         with get_connection(dict_cursor=True) as conn:
             cursor = conn.cursor()
@@ -1606,12 +1645,12 @@ async def api_range_query(request: RangeQueryRequest):
             conditions = []
             params = []
 
-            for comp in all_components:
-                if comp in components and comp in ranges:
+            for comp in PUBLIC_COMPONENT_COLUMNS:
+                if comp in components:
                     # 已选组分：在范围内
-                    r = ranges[comp]
+                    min_val, max_val = _get_range_pair(ranges, comp)
                     conditions.append(f"({comp} >= ? AND {comp} <= ?)")
-                    params.extend([r['min'], r['max']])
+                    params.extend([min_val, max_val])
                 else:
                     # 未选组分：必须为0或接近0
                     conditions.append(f"{comp} <= 0.02")
@@ -1647,8 +1686,9 @@ async def api_range_query(request: RangeQueryRequest):
                 "message": "在指定的组分范围和温度下未找到数据"
             }
             
-    except Exception as e:
-        return {"success": False, "message": str(e)}
+    except Exception:
+        logger.exception("range query 查询失败")
+        return {"success": False, "message": "查询失败"}
 
 
 class MatchCountRequest(BaseModel):
@@ -1661,11 +1701,9 @@ async def api_match_count(request: MatchCountRequest):
     根据组分范围查询匹配的数据条数（不考虑温度）
     返回模糊数量：100+, 10+, <10, 0
     """
-    components = request.components
+    components = _validate_component_list(request.components)
     ranges = request.ranges
 
-    all_components = ['x_ch4', 'x_c2h6', 'x_c3h8', 'x_co2', 'x_n2', 'x_h2s', 'x_ic4h10']
-    
     try:
         with get_connection(dict_cursor=True) as conn:
             cursor = conn.cursor()
@@ -1674,12 +1712,12 @@ async def api_match_count(request: MatchCountRequest):
             conditions = []
             params = []
 
-            for comp in all_components:
-                if comp in components and comp in ranges:
+            for comp in PUBLIC_COMPONENT_COLUMNS:
+                if comp in components:
                     # 已选组分：在范围内
-                    r = ranges[comp]
+                    min_val, max_val = _get_range_pair(ranges, comp)
                     conditions.append(f"({comp} >= ? AND {comp} <= ?)")
-                    params.extend([r['min'], r['max']])
+                    params.extend([min_val, max_val])
                 else:
                     # 未选组分：必须为0或接近0
                     conditions.append(f"{comp} <= 0.02")
@@ -1706,8 +1744,9 @@ async def api_match_count(request: MatchCountRequest):
                 "display": display
             }
         
-    except Exception as e:
-        return {"success": False, "message": str(e), "count": 0, "display": "0"}
+    except Exception:
+        logger.exception("match count 查询失败")
+        return {"success": False, "message": "查询失败", "count": 0, "display": "0"}
 
 
 class HydrateQueryRequest(BaseModel):
@@ -1796,8 +1835,9 @@ async def api_hydrate_query(request: HydrateQueryRequest):
                 "message": "未找到匹配的实验数据，请调整组分或温度"
             }
             
-    except Exception as e:
-        return {"success": False, "message": str(e)}
+    except Exception:
+        logger.exception("hydrate query 查询失败")
+        return {"success": False, "message": "查询失败"}
 
 
 # ==================== 数据模板 API ====================
@@ -1847,7 +1887,7 @@ async def api_download_excel_template():
             headers={"Content-Disposition": "attachment; filename=import_template.xlsx"}
         )
     except ImportError:
-        raise HTTPException(status_code=500, detail="需要安装 pandas 和 openpyxl")
+        raise HTTPException(status_code=500, detail="需要安装 pandas 和 openpyxl") from None
 
 
 # ==================== 备份相关 API ====================
@@ -1939,25 +1979,25 @@ async def serve_admin():
 @app.on_event("startup")
 async def startup_event():
     """应用启动时执行"""
-    print("[App] 正在初始化安全模块...")
+    logger.info("[App] 正在初始化安全模块...")
     init_security()
     ensure_admin_user()
     if is_using_default_secret_key():
-        print("[Security] WARNING: SECRET_KEY 使用默认值，请在生产环境中设置环境变量")
+        logger.warning("[Security] SECRET_KEY 使用默认值，请在生产环境中设置环境变量")
     if not is_admin_configured():
-        print("[Auth] WARNING: 未设置 ADMIN_PASSWORD，管理员登录已禁用")
-    print("[App] 正在初始化备份系统...")
+        logger.warning("[Auth] 未设置 ADMIN_PASSWORD，管理员登录已禁用")
+    logger.info("[App] 正在初始化备份系统...")
     init_backup_system()
     
     # 初始化缓存
-    print("[App] 正在初始化缓存系统...")
+    logger.info("[App] 正在初始化缓存系统...")
     cache = init_cache()
     if cache.is_connected():
-        print("[Cache] Redis缓存已连接")
+        logger.info("[Cache] Redis缓存已连接")
     else:
-        print("[Cache] WARNING: Redis未连接，缓存功能不可用")
+        logger.warning("[Cache] Redis未连接或已禁用，缓存功能不可用")
     
-    print("[App] 系统启动完成 v4.0")
+    logger.info("[App] 系统启动完成 v4.0")
 
 
 # ==================== 启动入口 ====================

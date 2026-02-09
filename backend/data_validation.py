@@ -3,7 +3,7 @@
 """
 
 import re
-from typing import List, Dict, Tuple, Any, Optional
+from typing import List, Dict, Tuple, Any
 from dataclasses import dataclass
 
 

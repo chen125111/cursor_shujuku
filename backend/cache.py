@@ -3,17 +3,36 @@ Redis缓存模块
 为数据库查询和API响应提供缓存功能
 """
 
-import redis
-import json
-import pickle
 import hashlib
-import time
-from typing import Any, Optional, Callable, Union
-from functools import wraps
+import inspect
+import json
 import logging
+import os
+import pickle
+import time
+from functools import wraps
+from typing import Any, Callable, Optional
+
+import redis
 
 # 配置日志
 logger = logging.getLogger(__name__)
+
+
+def _env_flag(name: str, default: bool = True) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in ("0", "false", "no", "off", "")
+
+
+def _cache_enabled() -> bool:
+    return _env_flag("CACHE_ENABLED", True)
+
+
+def _redis_url() -> str:
+    return os.getenv("REDIS_URL", "").strip()
+
 
 class RedisCache:
     """Redis缓存管理器"""
@@ -41,21 +60,37 @@ class RedisCache:
         
     def connect(self) -> bool:
         """连接Redis服务器"""
+        if not _cache_enabled():
+            self._connected = False
+            self._client = None
+            logger.info("缓存已通过 CACHE_ENABLED 禁用")
+            return False
+
         try:
-            self._client = redis.Redis(
-                host=self.host,
-                port=self.port,
-                db=self.db,
-                password=self.password,
-                decode_responses=False,  # 不自动解码，支持二进制数据
-                socket_connect_timeout=5,
-                socket_timeout=5,
-                retry_on_timeout=True
-            )
+            url = _redis_url()
+            if url:
+                self._client = redis.Redis.from_url(
+                    url,
+                    decode_responses=False,
+                    socket_connect_timeout=5,
+                    socket_timeout=5,
+                    retry_on_timeout=True,
+                )
+            else:
+                self._client = redis.Redis(
+                    host=self.host,
+                    port=self.port,
+                    db=self.db,
+                    password=self.password,
+                    decode_responses=False,  # 不自动解码，支持二进制数据
+                    socket_connect_timeout=5,
+                    socket_timeout=5,
+                    retry_on_timeout=True,
+                )
             # 测试连接
             self._client.ping()
             self._connected = True
-            logger.info(f"Redis连接成功: {self.host}:{self.port}")
+            logger.info("Redis连接成功")
             return True
         except Exception as e:
             logger.error(f"Redis连接失败: {e}")
@@ -69,7 +104,7 @@ class RedisCache:
         try:
             self._client.ping()
             return True
-        except:
+        except Exception:
             self._connected = False
             return False
     
@@ -134,11 +169,11 @@ class RedisCache:
             try:
                 # 尝试JSON解码
                 return json.loads(value.decode('utf-8'))
-            except:
+            except Exception:
                 try:
                     # 尝试pickle解码
                     return pickle.loads(value)
-                except:
+                except Exception:
                     # 返回原始字节
                     return value.decode('utf-8') if isinstance(value, bytes) else value
         except Exception as e:
@@ -185,10 +220,16 @@ class RedisCache:
             return 0
         
         try:
-            keys = client.keys(pattern)
-            if keys:
-                return client.delete(*keys)
-            return 0
+            deleted = 0
+            batch: list[bytes] = []
+            for key in client.scan_iter(match=pattern, count=1000):
+                batch.append(key)
+                if len(batch) >= 500:
+                    deleted += int(client.delete(*batch))
+                    batch.clear()
+            if batch:
+                deleted += int(client.delete(*batch))
+            return deleted
         except Exception as e:
             logger.error(f"清除模式缓存失败: {e}")
             return 0
@@ -244,7 +285,7 @@ def cache_key_generator(*args, **kwargs) -> str:
     
     # 生成MD5哈希作为键
     key_data = f"{args_str}:{kwargs_str}".encode('utf-8')
-    return f"cache:{hashlib.md5(key_data).hexdigest()}"
+    return hashlib.md5(key_data).hexdigest()
 
 
 def cached(ttl: int = 300, key_prefix: str = "func"):
@@ -259,32 +300,51 @@ def cached(ttl: int = 300, key_prefix: str = "func"):
         装饰器函数
     """
     def decorator(func: Callable):
+        missing = object()
+
+        def _build_key(args: tuple[object, ...], kwargs: dict[str, object]) -> str:
+            digest = cache_key_generator(*args, **kwargs)
+            # 统一以 "cache:" 开头，便于按前缀清理
+            return f"cache:{key_prefix}:{func.__module__}:{func.__name__}:{digest}"
+
+        if inspect.iscoroutinefunction(func):
+            @wraps(func)
+            async def async_wrapper(*args, **kwargs):
+                cache = get_cache()
+                if not cache or not cache.is_connected():
+                    return await func(*args, **kwargs)
+
+                cache_key = _build_key(args, kwargs)
+                cached_result = cache.get(cache_key, default=missing)
+                if cached_result is not missing:
+                    logger.debug(f"缓存命中: {cache_key}")
+                    return cached_result
+
+                logger.debug(f"缓存未命中: {cache_key}")
+                result = await func(*args, **kwargs)
+                cache.set(cache_key, result, ttl)
+                return result
+
+            return async_wrapper
+
         @wraps(func)
-        def wrapper(*args, **kwargs):
-            # 检查Redis是否可用
+        def sync_wrapper(*args, **kwargs):
             cache = get_cache()
             if not cache or not cache.is_connected():
-                # Redis不可用，直接执行函数
                 return func(*args, **kwargs)
-            
-            # 生成缓存键
-            cache_key = f"{key_prefix}:{func.__module__}:{func.__name__}:{cache_key_generator(*args, **kwargs)}"
-            
-            # 尝试从缓存获取
-            cached_result = cache.get(cache_key)
-            if cached_result is not None:
+
+            cache_key = _build_key(args, kwargs)
+            cached_result = cache.get(cache_key, default=missing)
+            if cached_result is not missing:
                 logger.debug(f"缓存命中: {cache_key}")
                 return cached_result
-            
-            # 缓存未命中，执行函数
+
             logger.debug(f"缓存未命中: {cache_key}")
             result = func(*args, **kwargs)
-            
-            # 缓存结果
             cache.set(cache_key, result, ttl)
-            
             return result
-        return wrapper
+
+        return sync_wrapper
     return decorator
 
 
@@ -299,23 +359,30 @@ def invalidate_cache(pattern: str = None):
         装饰器函数
     """
     def decorator(func: Callable):
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            # 先执行函数
-            result = func(*args, **kwargs)
-            
-            # 清除缓存
+        def _invalidate() -> None:
             cache = get_cache()
             if cache and cache.is_connected():
                 if pattern:
                     cache.clear_pattern(pattern)
                 else:
-                    # 自动生成清除模式：清除该函数相关的所有缓存
-                    func_pattern = f"cache:*:{func.__module__}:{func.__name__}:*"
-                    cache.clear_pattern(func_pattern)
-            
+                    cache.clear_pattern("cache:*")
+
+        if inspect.iscoroutinefunction(func):
+            @wraps(func)
+            async def async_wrapper(*args, **kwargs):
+                result = await func(*args, **kwargs)
+                _invalidate()
+                return result
+
+            return async_wrapper
+
+        @wraps(func)
+        def sync_wrapper(*args, **kwargs):
+            result = func(*args, **kwargs)
+            _invalidate()
             return result
-        return wrapper
+
+        return sync_wrapper
     return decorator
 
 
@@ -334,6 +401,12 @@ def init_cache(host: str = 'localhost', port: int = 6379,
     """
     global _cache_instance
     if _cache_instance is None:
+        host = os.getenv("REDIS_HOST", host)
+        port = int(os.getenv("REDIS_PORT", str(port)))
+        db = int(os.getenv("REDIS_DB", str(db)))
+        password = os.getenv("REDIS_PASSWORD") or password
+        default_ttl = int(os.getenv("CACHE_DEFAULT_TTL", str(default_ttl)))
+
         _cache_instance = RedisCache(
             host=host, port=port, db=db, 
             password=password, default_ttl=default_ttl

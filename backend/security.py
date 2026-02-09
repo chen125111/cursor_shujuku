@@ -4,8 +4,6 @@
 
 import time
 import hashlib
-import hmac
-import base64
 import re
 import os
 import uuid
@@ -333,7 +331,7 @@ def detect_crawler(user_agent: str, request_path: str, ip: str) -> Tuple[bool, s
     # 检查请求模式
     for pattern in CRAWLER_PATTERNS:
         if re.search(pattern, request_path):
-            return True, f"检测到爬虫请求模式"
+            return True, "检测到爬虫请求模式"
     
     # 检查请求频率特征（短时间内大量请求同一资源）
     # 这部分由rate_limit处理
