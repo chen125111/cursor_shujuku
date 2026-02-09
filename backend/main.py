@@ -221,6 +221,14 @@ FRONTEND_INDEX = os.path.join(FRONTEND_DIR, "index.html")
 
 # ==================== API 路由 ====================
 
+# 端点：GET /api/records
+# 功能：获取气体混合物记录列表，支持分页与温度/压力区间筛选。
+# 参数（Query）：
+# - page：页码（从 1 开始）
+# - per_page：每页数量（1~100）
+# - temp_min/temp_max：温度筛选下限/上限（K）
+# - pressure_min/pressure_max：压力筛选下限/上限（MPa）
+# 返回值：`PaginatedResponse`，包含 records 列表、分页信息与总数等。
 @app.get("/api/records", response_model=PaginatedResponse, tags=["Records"])
 async def api_get_records(
     page: int = Query(1, ge=1, description="页码"),
@@ -242,6 +250,11 @@ async def api_get_records(
     return result
 
 
+# 端点：GET /api/records/{record_id}
+# 功能：按 ID 获取单条记录详情。
+# 参数（Path）：
+# - record_id：记录 ID（整数）
+# 返回值：`GasRecord`（记录不存在时返回 404）。
 @app.get("/api/records/{record_id}", response_model=GasRecord, tags=["Records"])
 async def api_get_record(record_id: int):
     """获取单条记录"""
@@ -251,6 +264,14 @@ async def api_get_record(record_id: int):
     return record
 
 
+# 端点：POST /api/records
+# 功能：新增一条记录（写入前会清洗/校验数据，并给出软提示）。
+# 参数（Body）：
+# - data：`GasRecordCreate`（温度、压力、组分等字段）
+# 参数（Header）：
+# - Authorization：`Bearer <token>`（需登录）
+# 权限：admin / user
+# 返回值：`ApiResponse`，成功时包含新建记录 id；校验失败返回 400；异常返回 500。
 @app.post("/api/records", response_model=ApiResponse, tags=["Records"])
 async def api_create_record(data: GasRecordCreate, user: dict = Depends(require_auth)):
     """创建新记录"""
@@ -276,6 +297,16 @@ async def api_create_record(data: GasRecordCreate, user: dict = Depends(require_
         raise HTTPException(status_code=500, detail="创建失败") from None
 
 
+# 端点：PUT /api/records/{record_id}
+# 功能：更新指定 ID 的记录（仅更新非空字段；更新前会合并现有数据后清洗/校验）。
+# 参数（Path）：
+# - record_id：记录 ID
+# 参数（Body）：
+# - data：`GasRecordUpdate`（可选字段，None 不更新）
+# 参数（Header）：
+# - Authorization：`Bearer <token>`（需登录）
+# 权限：admin / user
+# 返回值：`ApiResponse`，成功返回更新结果信息；记录不存在返回 404；参数为空/校验失败返回 400。
 @app.put("/api/records/{record_id}", response_model=ApiResponse, tags=["Records"])
 async def api_update_record(record_id: int, data: GasRecordUpdate, user: dict = Depends(require_auth)):
     """更新记录"""
@@ -305,6 +336,14 @@ async def api_update_record(record_id: int, data: GasRecordUpdate, user: dict = 
     return ApiResponse(success=True, message="更新成功" + format_soft_warning(warnings))
 
 
+# 端点：DELETE /api/records/{record_id}
+# 功能：删除指定 ID 的记录。
+# 参数（Path）：
+# - record_id：记录 ID
+# 参数（Header）：
+# - Authorization：`Bearer <token>`（需登录）
+# 权限：admin / user
+# 返回值：`ApiResponse`，成功删除返回 success=true；记录不存在返回 404。
 @app.delete("/api/records/{record_id}", response_model=ApiResponse, tags=["Records"])
 async def api_delete_record(record_id: int, user: dict = Depends(require_auth)):
     """删除记录"""
@@ -318,6 +357,10 @@ async def api_delete_record(record_id: int, user: dict = Depends(require_auth)):
     return ApiResponse(success=True, message="删除成功")
 
 
+# 端点：GET /api/statistics
+# 功能：获取全局统计信息（服务端缓存 60 秒）。
+# 参数：无
+# 返回值：`Statistics`（统计指标结构由后端定义）。
 @app.get("/api/statistics", response_model=Statistics, tags=["Statistics"])
 @cached(ttl=60)  # 缓存60秒
 async def api_statistics():
@@ -328,6 +371,10 @@ async def api_statistics():
 
 # ==================== 图表数据API ====================
 
+# 端点：GET /api/charts/temperature
+# 功能：返回温度分布图表数据（缓存 5 分钟）。
+# 参数：无
+# 返回值：图表数据字典（labels/data 等结构由 `get_chart_data('temperature')` 决定）。
 @app.get("/api/charts/temperature", tags=["Charts"])
 @cached(ttl=300)  # 缓存5分钟
 async def api_chart_temperature():
@@ -337,6 +384,10 @@ async def api_chart_temperature():
     return chart_data
 
 
+# 端点：GET /api/charts/pressure
+# 功能：返回压力分布图表数据（缓存 5 分钟）。
+# 参数：无
+# 返回值：图表数据字典（由 `get_chart_data('pressure')` 决定）。
 @app.get("/api/charts/pressure", tags=["Charts"])
 @cached(ttl=300)  # 缓存5分钟
 async def api_chart_pressure():
@@ -346,6 +397,10 @@ async def api_chart_pressure():
     return chart_data
 
 
+# 端点：GET /api/charts/scatter
+# 功能：返回温度-压力散点图数据（缓存 5 分钟）。
+# 参数：无
+# 返回值：图表数据字典（由 `get_chart_data('scatter')` 决定）。
 @app.get("/api/charts/scatter", tags=["Charts"])
 @cached(ttl=300)  # 缓存5分钟
 async def api_chart_scatter():
@@ -355,6 +410,10 @@ async def api_chart_scatter():
     return chart_data
 
 
+# 端点：GET /api/charts/composition
+# 功能：计算并返回数据库中各组分的平均占比（百分比）。
+# 参数：无
+# 返回值：包含 labels/data/title 的字典；无数据时返回空数组。
 @app.get("/api/charts/composition", tags=["Charts"])
 @cached(ttl=300)  # 缓存5分钟
 async def api_chart_composition():
@@ -400,6 +459,10 @@ async def api_chart_composition():
         }
 
 
+# 端点：GET /api/charts/cache/stats
+# 功能：获取图表缓存（Redis）连接与命中等统计信息。
+# 参数：无
+# 返回值：成功时返回缓存 stats；未连接时返回 connected=false。
 @app.get("/api/charts/cache/stats", tags=["Charts", "Cache"])
 async def api_cache_stats():
     """获取缓存统计信息"""
@@ -417,6 +480,11 @@ async def api_cache_stats():
     }
 
 
+# 端点：POST /api/charts/cache/clear
+# 功能：清除图表相关缓存（pattern：cache:*）。
+# 参数（Header）：Authorization：`Bearer <token>`（需登录）
+# 权限：admin / user
+# 返回值：清除成功返回清除数量；未连接 Redis 则返回 success=false。
 @app.post("/api/charts/cache/clear", tags=["Charts", "Cache"])
 async def api_clear_cache(user: dict = Depends(require_auth)):
     """清除图表缓存"""
@@ -438,6 +506,12 @@ async def api_clear_cache(user: dict = Depends(require_auth)):
 
 # ==================== 查询API ====================
 
+# 端点：GET /api/query
+# 功能：按组分组合查询匹配记录（用于按组分反查温度/压力等结果）。
+# 参数（Query）：各组分摩尔分数（可选），tolerance 容差，strict 是否严格模式。
+# - tolerance：允许误差范围（默认 0.02，即 2%）
+# - strict：严格模式下，未输入的组分要求接近 0
+# 返回值：`{success, data, count}`；若未提供任何组分则返回 success=false。
 @app.get("/api/query", tags=["Query"])
 async def api_query_by_composition(
     x_ch4: Optional[float] = Query(None, description="CH4 摩尔分数"),
@@ -475,6 +549,10 @@ async def api_query_by_composition(
 
 # ==================== 图表数据 API ====================
 
+# 端点：GET /api/chart/temperature
+# 功能：返回温度分布数据（另一组较早的图表接口，与 /api/charts/temperature 并存）。
+# 参数：无
+# 返回值：由 `get_chart_data('temperature')` 生成的图表数据字典。
 @app.get("/api/chart/temperature", tags=["Chart"])
 async def api_chart_temperature_legacy():
     """获取温度分布数据（用于图表）"""
@@ -482,6 +560,10 @@ async def api_chart_temperature_legacy():
     return data
 
 
+# 端点：GET /api/chart/pressure
+# 功能：返回压力分布数据（与 /api/charts/pressure 并存）。
+# 参数：无
+# 返回值：由 `get_chart_data('pressure')` 生成的图表数据字典。
 @app.get("/api/chart/pressure", tags=["Chart"])
 async def api_chart_pressure_legacy():
     """获取压力分布数据（用于图表）"""
@@ -489,6 +571,10 @@ async def api_chart_pressure_legacy():
     return data
 
 
+# 端点：GET /api/chart/scatter
+# 功能：返回温度-压力散点图数据（与 /api/charts/scatter 并存）。
+# 参数：无
+# 返回值：由 `get_chart_data('scatter')` 生成的图表数据字典。
 @app.get("/api/chart/scatter", tags=["Chart"])
 async def api_chart_scatter_legacy():
     """获取温度-压力散点图数据"""
@@ -496,6 +582,12 @@ async def api_chart_scatter_legacy():
     return data
 
 
+# 端点：GET /api/chart/heatmap
+# 功能：生成温度-压力二维密度热力图数据（按区间分箱统计）。
+# 参数（Query）：
+# - temp_bins：温度分箱数（5~60，默认 18）
+# - pressure_bins：压力分箱数（5~60，默认 20）
+# 返回值：`{x_labels, y_labels, data, meta}`；无数据时返回空结构。
 @app.get("/api/chart/heatmap", tags=["Chart"])
 async def api_chart_heatmap(
     temp_bins: int = Query(18, ge=5, le=60),
@@ -571,6 +663,11 @@ async def api_chart_heatmap(
     }
 
 
+# 端点：GET /api/chart/scatter-distribution
+# 功能：返回温度-压力散点分布明细（可选限制返回条数，便于前端绘制大量散点）。
+# 参数（Query）：
+# - limit：最多返回条数（1~200000），为空则返回全部
+# 返回值：`{data, pressure_min, pressure_max, count}`；无数据时返回空列表。
 @app.get("/api/chart/scatter-distribution", tags=["Chart"])
 async def api_chart_scatter_distribution(
     limit: Optional[int] = Query(None, ge=1, le=200000)
@@ -603,6 +700,10 @@ async def api_chart_scatter_distribution(
 
 # ==================== 导入导出 API ====================
 
+# 端点：GET /api/export/csv
+# 功能：导出全部数据为 CSV 文件下载。
+# 参数（Header）：Authorization：`Bearer <token>`（需登录）
+# 返回值：`StreamingResponse`（text/csv），触发下载 `gas_data_export.csv`。
 @app.get("/api/export/csv", tags=["Export"])
 async def api_export_csv(user: dict = Depends(require_auth)):
     """导出所有数据为 CSV 文件"""
@@ -634,6 +735,10 @@ async def api_export_csv(user: dict = Depends(require_auth)):
     )
 
 
+# 端点：GET /api/export/excel
+# 功能：导出全部数据为 Excel 文件下载（依赖 pandas/openpyxl）。
+# 参数（Header）：Authorization：`Bearer <token>`（需登录）
+# 返回值：`StreamingResponse`（xlsx），触发下载 `gas_data_export.xlsx`；缺少依赖时返回 500。
 @app.get("/api/export/excel", tags=["Export"])
 async def api_export_excel(user: dict = Depends(require_auth)):
     """导出所有数据为 Excel 文件"""
@@ -678,6 +783,13 @@ async def api_export_excel(user: dict = Depends(require_auth)):
         raise HTTPException(status_code=500, detail="需要安装 pandas 和 openpyxl") from None
 
 
+# 端点：POST /api/import
+# 功能：批量导入 CSV/Excel 数据并写入数据库（写入前逐行校验，校验失败不写入）。
+# 参数（Body）：multipart/form-data
+# - file：上传文件（.csv/.xlsx/.xls）
+# 参数（Header）：Authorization：`Bearer <token>`（需登录）
+# 权限：admin / user
+# 返回值：`ApiResponse`，包含导入条数与软提示数量；校验失败返回 400（包含错误摘要）；异常返回 500。
 @app.post("/api/import", tags=["Import"])
 async def api_import_file(file: UploadFile = File(...), user: dict = Depends(require_auth)):
     """批量导入数据（支持 CSV 和 Excel 文件）"""
@@ -734,6 +846,13 @@ async def api_import_file(file: UploadFile = File(...), user: dict = Depends(req
         raise HTTPException(status_code=500, detail="导入失败") from None
 
 
+# 端点：POST /api/import/preview
+# 功能：导入前预览校验（只解析与校验，不写入数据库）。
+# 参数（Body）：multipart/form-data
+# - file：上传文件（.csv/.xlsx/.xls）
+# 参数（Header）：Authorization：`Bearer <token>`（需登录）
+# 权限：admin / user
+# 返回值：`{success, data}`，data.summary 包含总数/有效/无效/软提示/跳过统计，并返回部分错误与警告列表。
 @app.post("/api/import/preview", tags=["Import"])
 async def api_import_preview(file: UploadFile = File(...), user: dict = Depends(require_auth)):
     """导入前校验预览（不写入数据库）"""
@@ -855,6 +974,10 @@ def parse_import_row(row: dict) -> Optional[dict]:
 
 # ==================== 静态文件服务 ====================
 
+# 端点：GET /
+# 功能：返回前端首页（如果构建产物存在），否则提示访问 /docs。
+# 参数：无
+# 返回值：`FileResponse(index.html)` 或 JSON 提示信息。
 @app.get("/", tags=["Frontend"])
 async def serve_frontend():
     """提供前端页面"""
@@ -863,6 +986,10 @@ async def serve_frontend():
     return {"message": f"前端文件不存在: {FRONTEND_INDEX}，请访问 /docs 查看 API 文档"}
 
 
+# 端点：GET /css/{filename}
+# 功能：返回前端静态 CSS 文件。
+# 参数（Path）：filename 文件名
+# 返回值：`FileResponse(text/css)`；不存在返回 404。
 @app.get("/css/{filename}", tags=["Frontend"])
 async def serve_css(filename: str):
     """提供 CSS 文件"""
@@ -872,6 +999,10 @@ async def serve_css(filename: str):
     raise HTTPException(status_code=404, detail="CSS file not found")
 
 
+# 端点：GET /js/{filename}
+# 功能：返回前端静态 JS 文件。
+# 参数（Path）：filename 文件名
+# 返回值：`FileResponse(application/javascript)`；不存在返回 404。
 @app.get("/js/{filename}", tags=["Frontend"])
 async def serve_js(filename: str):
     """提供 JS 文件"""
@@ -883,6 +1014,16 @@ async def serve_js(filename: str):
 
 # ==================== 认证相关 API ====================
 
+# 端点：POST /api/auth/login
+# 功能：用户登录并签发访问令牌（支持 TOTP 两步验证；记录登录与审计日志；创建会话）。
+# 参数（Body）：`LoginRequest`
+# - username：用户名
+# - password：密码
+# - totp_code：两步验证码（如账号启用 TOTP 则必填）
+# 返回值：
+# - 成功：`{success: true, data: {access_token, token_type, user, totp_enabled}}`
+# - 需要两步码：`{success: false, require_totp: true, message}`
+# - 失败：401/429 等错误码
 @app.post("/api/auth/login", tags=["Auth"])
 async def api_login(request: LoginRequest, req: Request):
     """用户登录（支持两步验证）"""
@@ -938,6 +1079,10 @@ async def api_login(request: LoginRequest, req: Request):
     }
 
 
+# 端点：GET /api/auth/me
+# 功能：获取当前登录用户信息（由 token 解析得到）。
+# 参数（Header）：Authorization：`Bearer <token>`（需登录）
+# 返回值：`{success: true, data: user}`。
 @app.get("/api/auth/me", tags=["Auth"])
 async def api_get_me(user: dict = Depends(require_auth)):
     """获取当前用户信息"""
@@ -947,6 +1092,11 @@ async def api_get_me(user: dict = Depends(require_auth)):
     }
 
 
+# 端点：POST /api/auth/change-password
+# 功能：修改当前用户密码（包含密码策略校验与审计记录）。
+# 参数（Body）：`ChangePasswordRequest`（old_password/new_password）
+# 参数（Header）：Authorization：`Bearer <token>`（需登录）
+# 返回值：成功返回 `{success: true}`；原密码错误/策略不符合返回 400。
 @app.post("/api/auth/change-password", tags=["Auth"])
 async def api_change_password(request: ChangePasswordRequest, user: dict = Depends(require_auth)):
     """修改密码（带密码策略验证）"""
@@ -963,12 +1113,22 @@ async def api_change_password(request: ChangePasswordRequest, user: dict = Depen
     return {"success": True, "message": "密码修改成功"}
 
 
+# 端点：GET /api/auth/password-policy
+# 功能：获取当前密码策略（用于前端提示与校验）。
+# 参数：无
+# 返回值：`{success: true, data: <policy>}`。
 @app.get("/api/auth/password-policy", tags=["Auth"])
 async def api_password_policy():
     """获取密码策略"""
     return {"success": True, "data": get_password_policy()}
 
 
+# 端点：POST /api/auth/users
+# 功能：管理员创建新用户（包含密码策略校验）。
+# 参数（Body）：`CreateUserRequest`（username/password/role）
+# 参数（Header）：Authorization：`Bearer <token>`（需登录）
+# 权限：仅 admin
+# 返回值：成功返回 `{success: true}`；用户已存在/参数无效返回 400。
 @app.post("/api/auth/users", tags=["Auth"])
 async def api_create_user(request: CreateUserRequest, user: dict = Depends(require_auth)):
     """创建新用户（仅管理员）"""
@@ -989,6 +1149,13 @@ async def api_create_user(request: CreateUserRequest, user: dict = Depends(requi
     return {"success": True, "message": "用户创建成功"}
 
 
+# 端点：POST /api/auth/users/{username}/reset-password
+# 功能：管理员重置指定用户密码（包含密码策略校验与审计记录）。
+# 参数（Path）：username 目标用户名
+# 参数（Body）：`ResetUserPasswordRequest`（new_password）
+# 参数（Header）：Authorization：`Bearer <token>`（需登录）
+# 权限：仅 admin
+# 返回值：成功返回 `{success: true}`；用户不存在返回 404；策略不符返回 400。
 @app.post("/api/auth/users/{username}/reset-password", tags=["Auth"])
 async def api_reset_user_password(
     username: str,
@@ -1011,6 +1178,11 @@ async def api_reset_user_password(
     return {"success": True, "message": "密码已重置"}
 
 
+# 端点：GET /api/auth/users
+# 功能：管理员获取用户列表。
+# 参数（Header）：Authorization：`Bearer <token>`（需登录）
+# 权限：仅 admin
+# 返回值：`{success: true, data: <users>}`。
 @app.get("/api/auth/users", tags=["Auth"])
 async def api_list_users(user: dict = Depends(require_auth)):
     """获取用户列表（仅管理员）"""
@@ -1022,6 +1194,10 @@ async def api_list_users(user: dict = Depends(require_auth)):
 
 # ==================== TOTP 两步验证 API ====================
 
+# 端点：POST /api/auth/totp/setup
+# 功能：初始化两步验证配置，返回密钥与二维码 URI（用于绑定验证器 App）。
+# 参数（Header）：Authorization：`Bearer <token>`（需登录）
+# 返回值：`{success: true, data: {secret, uri, message}}`。
 @app.post("/api/auth/totp/setup", tags=["TOTP"])
 async def api_totp_setup(user: dict = Depends(require_auth)):
     """设置两步验证（返回密钥和二维码URI）"""
@@ -1036,6 +1212,11 @@ async def api_totp_setup(user: dict = Depends(require_auth)):
     }
 
 
+# 端点：POST /api/auth/totp/enable
+# 功能：启用两步验证（需要提交当前验证码进行确认），并记录审计。
+# 参数（Body）：`TOTPSetupRequest`（code）
+# 参数（Header）：Authorization：`Bearer <token>`（需登录）
+# 返回值：成功返回 `{success: true}`；验证码错误返回 400。
 @app.post("/api/auth/totp/enable", tags=["TOTP"])
 async def api_totp_enable(request: TOTPSetupRequest, user: dict = Depends(require_auth)):
     """启用两步验证（需要验证码确认）"""
@@ -1047,6 +1228,10 @@ async def api_totp_enable(request: TOTPSetupRequest, user: dict = Depends(requir
     return {"success": True, "message": "两步验证已启用"}
 
 
+# 端点：POST /api/auth/totp/disable
+# 功能：禁用两步验证，并记录审计。
+# 参数（Header）：Authorization：`Bearer <token>`（需登录）
+# 返回值：`{success: true, message}`。
 @app.post("/api/auth/totp/disable", tags=["TOTP"])
 async def api_totp_disable(user: dict = Depends(require_auth)):
     """禁用两步验证"""
@@ -1055,6 +1240,10 @@ async def api_totp_disable(user: dict = Depends(require_auth)):
     return {"success": True, "message": "两步验证已禁用"}
 
 
+# 端点：GET /api/auth/totp/status
+# 功能：获取当前用户两步验证启用状态与相关信息。
+# 参数（Header）：Authorization：`Bearer <token>`（需登录）
+# 返回值：`{success: true, data: <status>}`。
 @app.get("/api/auth/totp/status", tags=["TOTP"])
 async def api_totp_status(user: dict = Depends(require_auth)):
     """获取两步验证状态"""
@@ -1062,6 +1251,10 @@ async def api_totp_status(user: dict = Depends(require_auth)):
     return {"success": True, "data": status}
 
 
+# 端点：POST /api/auth/totp/backup-codes
+# 功能：重新生成两步验证备用码，并记录审计。
+# 参数（Header）：Authorization：`Bearer <token>`（需登录）
+# 返回值：`{success: true, data: {backup_codes}}`。
 @app.post("/api/auth/totp/backup-codes", tags=["TOTP"])
 async def api_regenerate_backup_codes(user: dict = Depends(require_auth)):
     """重新生成备用码"""
@@ -1072,6 +1265,10 @@ async def api_regenerate_backup_codes(user: dict = Depends(require_auth)):
 
 # ==================== 会话管理 API ====================
 
+# 端点：GET /api/auth/sessions
+# 功能：获取当前用户的所有会话列表。
+# 参数（Header）：Authorization：`Bearer <token>`（需登录）
+# 返回值：`{success: true, data: <sessions>}`。
 @app.get("/api/auth/sessions", tags=["Sessions"])
 async def api_get_sessions(user: dict = Depends(require_auth)):
     """获取当前用户的所有会话"""
@@ -1079,6 +1276,11 @@ async def api_get_sessions(user: dict = Depends(require_auth)):
     return {"success": True, "data": sessions}
 
 
+# 端点：DELETE /api/auth/sessions/{session_id}
+# 功能：撤销指定会话（当前实现为占位返回，未按 session_id 真正执行撤销）。
+# 参数（Path）：session_id 会话 ID
+# 参数（Header）：Authorization：`Bearer <token>`（需登录）
+# 返回值：`{success: true, message}`。
 @app.delete("/api/auth/sessions/{session_id}", tags=["Sessions"])
 async def api_revoke_session(session_id: int, user: dict = Depends(require_auth)):
     """撤销指定会话"""
@@ -1086,6 +1288,11 @@ async def api_revoke_session(session_id: int, user: dict = Depends(require_auth)
     return {"success": True, "message": "会话已撤销"}
 
 
+# 端点：POST /api/auth/sessions/revoke-all
+# 功能：撤销当前用户除当前 token 外的所有会话，并记录审计。
+# 参数（Header）：
+# - Authorization：`Bearer <token>`（需登录，用于识别当前会话）
+# 返回值：成功返回撤销数量 `{success: true, message}`。
 @app.post("/api/auth/sessions/revoke-all", tags=["Sessions"])
 async def api_revoke_all_sessions(user: dict = Depends(require_auth), authorization: Optional[str] = Header(None)):
     """撤销除当前会话外的所有会话"""
@@ -1095,6 +1302,12 @@ async def api_revoke_all_sessions(user: dict = Depends(require_auth), authorizat
     return {"success": True, "message": f"已撤销 {count} 个会话"}
 
 
+# 端点：GET /api/auth/users/{username}/sessions
+# 功能：管理员查看指定用户的会话列表。
+# 参数（Path）：username 用户名
+# 参数（Header）：Authorization：`Bearer <token>`（需登录）
+# 权限：仅 admin
+# 返回值：`{success: true, data: <sessions>}`。
 @app.get("/api/auth/users/{username}/sessions", tags=["Sessions"])
 async def api_get_user_sessions(
     username: str,
@@ -1108,6 +1321,12 @@ async def api_get_user_sessions(
     return {"success": True, "data": sessions}
 
 
+# 端点：POST /api/auth/users/{username}/sessions/revoke-all
+# 功能：管理员撤销指定用户所有会话；若撤销自己会话则保留当前 token。
+# 参数（Path）：username 用户名
+# 参数（Header）：Authorization：`Bearer <token>`（需登录，用于识别当前会话）
+# 权限：仅 admin
+# 返回值：成功返回撤销数量 `{success: true, message}`。
 @app.post("/api/auth/users/{username}/sessions/revoke-all", tags=["Sessions"])
 async def api_admin_revoke_user_sessions(
     username: str,
@@ -1125,6 +1344,10 @@ async def api_admin_revoke_user_sessions(
     return {"success": True, "message": f"已撤销 {count} 个会话"}
 
 
+# 端点：POST /api/auth/logout
+# 功能：退出登录（撤销当前 token 对应会话）并记录审计。
+# 参数（Header）：Authorization：`Bearer <token>`（需登录）
+# 返回值：`{success: true, message}`。
 @app.post("/api/auth/logout", tags=["Sessions"])
 async def api_logout(user: dict = Depends(require_auth), authorization: Optional[str] = Header(None)):
     """退出登录"""
@@ -1137,6 +1360,13 @@ async def api_logout(user: dict = Depends(require_auth), authorization: Optional
 
 # ==================== 登录日志 API ====================
 
+# 端点：GET /api/security/login-logs
+# 功能：获取登录日志；非管理员仅可查看自己的日志。
+# 参数（Query）：
+# - username：可选，管理员可指定查看某用户
+# - limit：返回条数（1~500，默认 100）
+# 参数（Header）：Authorization：`Bearer <token>`（需登录）
+# 返回值：`{success: true, data: <logs>}`。
 @app.get("/api/security/login-logs", tags=["Security"])
 async def api_get_login_logs(
     user: dict = Depends(require_auth),
@@ -1152,6 +1382,12 @@ async def api_get_login_logs(
     return {"success": True, "data": logs}
 
 
+# 端点：GET /api/security/audit-logs
+# 功能：获取审计日志（仅管理员）。
+# 参数（Query）：username/action（可选过滤），limit（1~500）
+# 参数（Header）：Authorization：`Bearer <token>`（需登录）
+# 权限：仅 admin
+# 返回值：`{success: true, data: <logs>}`。
 @app.get("/api/security/audit-logs", tags=["Security"])
 async def api_get_audit_logs(
     user: dict = Depends(require_auth),
@@ -1167,6 +1403,10 @@ async def api_get_audit_logs(
     return {"success": True, "data": logs}
 
 
+# 端点：GET /api/security/rate-limit
+# 功能：查看当前客户端 IP 的限流状态（便于排障）。
+# 参数：无（从请求中获取客户端 IP）
+# 返回值：`{success: true, data: <status>}`。
 @app.get("/api/security/rate-limit", tags=["Security"])
 async def api_rate_limit_status(req: Request):
     """获取当前IP的限流状态"""
@@ -1177,6 +1417,12 @@ async def api_rate_limit_status(req: Request):
 
 # ==================== 批量操作 API ====================
 
+# 端点：POST /api/records/batch-delete
+# 功能：批量删除记录，并记录审计。
+# 参数（Body）：`BatchDeleteRequest`（ids：记录 ID 列表）
+# 参数（Header）：Authorization：`Bearer <token>`（需登录）
+# 权限：仅 admin
+# 返回值：`{success: true, data: {deleted_count}}`。
 @app.post("/api/records/batch-delete", tags=["Batch"])
 async def api_batch_delete(request: BatchDeleteRequest, user: dict = Depends(require_auth)):
     """批量删除记录"""
@@ -1189,6 +1435,14 @@ async def api_batch_delete(request: BatchDeleteRequest, user: dict = Depends(req
     return {"success": True, "message": f"成功删除 {count} 条记录", "data": {"deleted_count": count}}
 
 
+# 端点：POST /api/records/batch-update
+# 功能：批量更新记录指定字段（对 updates 做部分校验），并记录审计。
+# 参数（Body）：`BatchUpdateRequest`
+# - ids：记录 ID 列表
+# - updates：要更新的字段字典
+# 参数（Header）：Authorization：`Bearer <token>`（需登录）
+# 权限：仅 admin
+# 返回值：`{success: true, data: {updated_count}}`；updates 为空或校验失败返回 400。
 @app.post("/api/records/batch-update", tags=["Batch"])
 async def api_batch_update(request: BatchUpdateRequest, user: dict = Depends(require_auth)):
     """批量更新记录"""
@@ -1215,6 +1469,11 @@ async def api_batch_update(request: BatchUpdateRequest, user: dict = Depends(req
 
 # ==================== 数据历史 API ====================
 
+# 端点：GET /api/records/{record_id}/history
+# 功能：获取指定记录的修改历史（谁在何时做了什么变更）。
+# 参数（Path）：record_id 记录 ID
+# 参数（Header）：Authorization：`Bearer <token>`（需登录）
+# 返回值：`{success: true, data: <history>}`。
 @app.get("/api/records/{record_id}/history", tags=["History"])
 async def api_get_record_history(record_id: int, user: dict = Depends(require_auth)):
     """获取记录的修改历史"""
@@ -1222,6 +1481,16 @@ async def api_get_record_history(record_id: int, user: dict = Depends(require_au
     return {"success": True, "data": history}
 
 
+# 端点：GET /api/history
+# 功能：管理员查询全量数据变更历史（支持按记录/动作/用户过滤与限制条数）。
+# 参数（Query）：
+# - limit：返回条数（1~500，默认 100）
+# - record_id：可选，按记录 ID 过滤
+# - action：可选，按动作类型过滤
+# - username：可选，按用户名过滤
+# 参数（Header）：Authorization：`Bearer <token>`（需登录）
+# 权限：仅 admin
+# 返回值：`{success: true, data: <history>}`。
 @app.get("/api/history", tags=["History"])
 async def api_get_all_history(
     user: dict = Depends(require_auth),
@@ -1240,18 +1509,30 @@ async def api_get_all_history(
 
 # ==================== 数据校验 API ====================
 
+# 端点：GET /api/validation/rules
+# 功能：获取后端数据校验规则（供前端展示或本地校验）。
+# 参数：无
+# 返回值：`{success: true, data: <rules>}`。
 @app.get("/api/validation/rules", tags=["Validation"])
 async def api_get_validation_rules():
     """获取数据校验规则"""
     return {"success": True, "data": get_validation_rules()}
 
 
+# 端点：GET /api/validation/constraints
+# 功能：获取字段约束（用于前端表单校验与输入限制）。
+# 参数：无
+# 返回值：`{success: true, data: <constraints>}`。
 @app.get("/api/validation/constraints", tags=["Validation"])
 async def api_get_field_constraints():
     """获取字段约束（用于前端表单验证）"""
     return {"success": True, "data": get_field_constraints()}
 
 
+# 端点：POST /api/validation/check
+# 功能：对一批记录做预校验（不入库），返回逐条校验结果/错误信息。
+# 参数（Body）：JSON 数组 `List[dict]`（每个 dict 是一条记录字段）
+# 返回值：`{success: true, data: <validate_batch_result>}`。
 @app.post("/api/validation/check", tags=["Validation"])
 async def api_validate_data(records: List[dict]):
     """预校验数据（不入库）"""
@@ -1277,6 +1558,11 @@ class ApproveBatchRequest(BaseModel):
 class GroupBatchRequest(BaseModel):
     group_ids: List[str]
 
+# 端点：GET /api/review/duplicates
+# 功能：查找“同组分+同温度”下存在多个压力值的重复数据组。
+# 参数（Header）：Authorization：`Bearer <token>`（需登录）
+# 权限：仅 admin
+# 返回值：`{success: true, data: <duplicates>, count}`。
 @app.get("/api/review/duplicates", tags=["Review"])
 async def api_find_duplicates(user: dict = Depends(require_auth)):
     """查找同组分同温度下有多个压力值的数据"""
@@ -1287,6 +1573,11 @@ async def api_find_duplicates(user: dict = Depends(require_auth)):
     return {"success": True, "data": duplicates, "count": len(duplicates)}
 
 
+# 端点：POST /api/review/move-duplicates
+# 功能：将检测出的重复数据迁移到“待审核区”，并记录审计。
+# 参数（Header）：Authorization：`Bearer <token>`（需登录）
+# 权限：仅 admin
+# 返回值：`{success: true, message, data: {moved, ...}}`。
 @app.post("/api/review/move-duplicates", tags=["Review"])
 async def api_move_duplicates(user: dict = Depends(require_auth)):
     """将重复数据移到待审核区"""
@@ -1299,6 +1590,15 @@ async def api_move_duplicates(user: dict = Depends(require_auth)):
     return {"success": True, "message": f"已移动 {result['moved']} 条记录到待审核区", "data": result}
 
 
+# 端点：GET /api/review/pending
+# 功能：分页获取待审核数据组列表（可按 group_id 与温度区间筛选）。
+# 参数（Query）：
+# - page/per_page：分页参数
+# - group_id：可选，按组 ID 精确/模糊筛选（取决于实现）
+# - temp_min/temp_max：可选，按温度范围筛选
+# 参数（Header）：Authorization：`Bearer <token>`（需登录）
+# 权限：仅 admin
+# 返回值：`{success: true, data: <result>, count: total}`，其中 data.total 为总组数。
 @app.get("/api/review/pending", tags=["Review"])
 async def api_get_pending_groups(
     page: int = Query(1, ge=1),
@@ -1322,6 +1622,11 @@ async def api_get_pending_groups(
     return {"success": True, "data": result, "count": result["total"]}
 
 
+# 端点：GET /api/review/stats
+# 功能：获取审核相关统计信息（待审核组数、记录数等）。
+# 参数（Header）：Authorization：`Bearer <token>`（需登录）
+# 权限：仅 admin
+# 返回值：`{success: true, data: <stats>}`。
 @app.get("/api/review/stats", tags=["Review"])
 async def api_get_review_stats(user: dict = Depends(require_auth)):
     """获取审核统计信息"""
@@ -1332,6 +1637,13 @@ async def api_get_review_stats(user: dict = Depends(require_auth)):
     return {"success": True, "data": stats}
 
 
+# 端点：PUT /api/review/pressure/{pending_id}
+# 功能：更新待审核记录的压力值（用于人工修正），并返回更新结果。
+# 参数（Path）：pending_id 待审核记录 ID
+# 参数（Query）：pressure 新压力值（MPa）（注意：此处未显式声明为 Body，因此由 FastAPI 作为查询参数处理）
+# 参数（Header）：Authorization：`Bearer <token>`（需登录）
+# 权限：仅 admin
+# 返回值：成功返回 `{success: true}`；记录不存在返回 404。
 @app.put("/api/review/pressure/{pending_id}", tags=["Review"])
 async def api_update_pressure(pending_id: int, pressure: float, user: dict = Depends(require_auth)):
     """更新待审核记录的压力值"""
@@ -1345,6 +1657,13 @@ async def api_update_pressure(pending_id: int, pressure: float, user: dict = Dep
     return {"success": True, "message": "压力值已更新"}
 
 
+# 端点：POST /api/review/approve/{group_id}
+# 功能：审核通过某个重复数据组：保留选中的记录并将其合并/写回正式区（具体逻辑由 `approve_group` 决定）。
+# 参数（Path）：group_id 数据组 ID
+# 参数（Body）：`ApproveRequest`（selected_ids：保留/通过的记录 ID 列表）
+# 参数（Header）：Authorization：`Bearer <token>`（需登录）
+# 权限：仅 admin
+# 返回值：`{success: true, message, data: <result>}`。
 @app.post("/api/review/approve/{group_id}", tags=["Review"])
 async def api_approve_group(group_id: str, request: ApproveRequest, user: dict = Depends(require_auth)):
     """审核通过一组数据"""
@@ -1357,6 +1676,12 @@ async def api_approve_group(group_id: str, request: ApproveRequest, user: dict =
     return {"success": True, "message": f"已审核通过 {result['approved']} 条记录", "data": result}
 
 
+# 端点：POST /api/review/approve-batch
+# 功能：批量审核通过多组数据（循环调用 `approve_group`）。
+# 参数（Body）：`ApproveBatchRequest`（items：每项包含 group_id + selected_ids）
+# 参数（Header）：Authorization：`Bearer <token>`（需登录）
+# 权限：仅 admin
+# 返回值：`{success: true, message, data: <results>}`。
 @app.post("/api/review/approve-batch", tags=["Review"])
 async def api_approve_groups(request: ApproveBatchRequest, user: dict = Depends(require_auth)):
     """批量审核通过多组数据"""
@@ -1377,6 +1702,12 @@ async def api_approve_groups(request: ApproveBatchRequest, user: dict = Depends(
     return {"success": True, "message": f"批量审核通过 {total_approved} 条记录", "data": results}
 
 
+# 端点：POST /api/review/reject/{group_id}
+# 功能：拒绝整组数据（将组标记为拒绝/移出待审核，具体逻辑由 `reject_group` 决定），并记录审计。
+# 参数（Path）：group_id 数据组 ID
+# 参数（Header）：Authorization：`Bearer <token>`（需登录）
+# 权限：仅 admin
+# 返回值：`{success: true, message}`。
 @app.post("/api/review/reject/{group_id}", tags=["Review"])
 async def api_reject_group(group_id: str, user: dict = Depends(require_auth)):
     """拒绝整组数据"""
@@ -1388,6 +1719,12 @@ async def api_reject_group(group_id: str, user: dict = Depends(require_auth)):
     return {"success": True, "message": "已拒绝该组数据"}
 
 
+# 端点：POST /api/review/reject-batch
+# 功能：批量拒绝多组数据，并记录审计。
+# 参数（Body）：`GroupBatchRequest`（group_ids：组 ID 列表）
+# 参数（Header）：Authorization：`Bearer <token>`（需登录）
+# 权限：仅 admin
+# 返回值：`{success: true, message}`，message 包含拒绝组数。
 @app.post("/api/review/reject-batch", tags=["Review"])
 async def api_reject_groups(request: GroupBatchRequest, user: dict = Depends(require_auth)):
     """批量拒绝多组数据"""
@@ -1405,6 +1742,12 @@ async def api_reject_groups(request: GroupBatchRequest, user: dict = Depends(req
     return {"success": True, "message": f"已拒绝 {rejected} 组数据"}
 
 
+# 端点：POST /api/review/restore/{group_id}
+# 功能：将某组数据恢复回待审核状态（用于撤销拒绝/回滚），具体逻辑由 `restore_group` 决定。
+# 参数（Path）：group_id 组 ID
+# 参数（Header）：Authorization：`Bearer <token>`（需登录）
+# 权限：仅 admin
+# 返回值：`{success: true, message, data: <result>}`。
 @app.post("/api/review/restore/{group_id}", tags=["Review"])
 async def api_restore_group(group_id: str, user: dict = Depends(require_auth)):
     """恢复一组数据到待审核状态"""
@@ -1416,6 +1759,12 @@ async def api_restore_group(group_id: str, user: dict = Depends(require_auth)):
     return {"success": True, "message": f"已恢复 {result['restored']} 条记录", "data": result}
 
 
+# 端点：POST /api/review/restore-batch
+# 功能：批量恢复多组数据到待审核，并记录审计。
+# 参数（Body）：`GroupBatchRequest`（group_ids：组 ID 列表）
+# 参数（Header）：Authorization：`Bearer <token>`（需登录）
+# 权限：仅 admin
+# 返回值：`{success: true, message}`，message 包含恢复条数。
 @app.post("/api/review/restore-batch", tags=["Review"])
 async def api_restore_groups(request: GroupBatchRequest, user: dict = Depends(require_auth)):
     """批量恢复多组数据到待审核"""
@@ -1475,6 +1824,10 @@ class RangeQueryRequest(BaseModel):
     ranges: dict  # {'x_ch4': {'min': 0.9, 'max': 0.95}, ...}
     temperature: float
 
+# 端点：POST /api/components/available
+# 功能：在“已选组分必须 >0”的条件下，返回还能追加哪些组分（数据库中存在记录）以及匹配记录数。
+# 参数（Body）：`AvailableComponentsRequest`（selected：已选组分字段名列表）
+# 返回值：成功返回 `{success, available, match_count}`；失败返回 `{success:false, message}`。
 @app.post("/api/components/available", tags=["Public Query"])
 async def api_available_components(request: AvailableComponentsRequest):
     """
@@ -1522,6 +1875,10 @@ async def api_available_components(request: AvailableComponentsRequest):
 class ComponentRangesRequest(BaseModel):
     components: List[str]  # ['x_ch4', 'x_c2h6', ...]
 
+# 端点：POST /api/components/ranges
+# 功能：在“已选组分 >0 且未选组分接近 0”的条件下，返回每个已选组分在库中的实际 min/max，以及记录数与温度范围。
+# 参数（Body）：`ComponentRangesRequest`（components：选定组分列表）
+# 返回值：成功返回 `{success, ranges, total_records, temp_range}`；失败返回 `{success:false, message}`。
 @app.post("/api/components/ranges", tags=["Public Query"])
 async def api_component_ranges(request: ComponentRangesRequest):
     """
@@ -1573,6 +1930,10 @@ class QueryByComponentsRequest(BaseModel):
     components: List[str]
     temperature: float
 
+# 端点：POST /api/query/by-components
+# 功能：根据“组分组合 + 温度”查询最接近的相平衡压力（温度允许 ±5K）。
+# 参数（Body）：`QueryByComponentsRequest`（components：组分字段列表，temperature：温度）
+# 返回值：找到则返回 `{success:true, data:{temperature, pressure, composition}}`；否则返回 `{success:false, message}`。
 @app.post("/api/query/by-components", tags=["Public Query"])
 async def api_query_by_components(request: QueryByComponentsRequest):
     """
@@ -1628,6 +1989,10 @@ async def api_query_by_components(request: QueryByComponentsRequest):
         return {"success": False, "message": "查询失败"}
 
 
+# 端点：POST /api/query/range
+# 功能：根据“组分取值范围 + 温度”查询相平衡压力（未选组分要求接近 0；温度允许 ±5K）。
+# 参数（Body）：`RangeQueryRequest`（components、ranges、temperature）
+# 返回值：找到则返回 `{success:true, data:{temperature, pressure}}`；否则返回 `{success:false, message}`。
 @app.post("/api/query/range", tags=["Public Query"])
 async def api_range_query(request: RangeQueryRequest):
     """
@@ -1695,6 +2060,10 @@ class MatchCountRequest(BaseModel):
     components: List[str]
     ranges: dict  # {'x_ch4': {'min': 0.9, 'max': 0.95}, ...}
 
+# 端点：POST /api/query/match-count
+# 功能：按组分范围估算匹配数据条数（不考虑温度），并返回模糊显示档位。
+# 参数（Body）：`MatchCountRequest`（components、ranges）
+# 返回值：`{success, count, display}`，display 为 "0" / "<10" / "10+" / "100+"。
 @app.post("/api/query/match-count", tags=["Public Query"])
 async def api_match_count(request: MatchCountRequest):
     """
@@ -1754,6 +2123,10 @@ class HydrateQueryRequest(BaseModel):
     temperature: float
     tolerance: float = 0.02  # 默认2%容差
 
+# 端点：POST /api/query/hydrate
+# 功能：气体水合物相平衡查询：输入组分与温度，按容差与温度范围匹配最接近实验点并返回压力与匹配度分数。
+# 参数（Body）：`HydrateQueryRequest`（components、temperature、tolerance）
+# 返回值：找到则返回 `{success:true, data:{temperature, pressure, match_score}}`；否则返回 `{success:false, message}`。
 @app.post("/api/query/hydrate", tags=["Public Query"])
 async def api_hydrate_query(request: HydrateQueryRequest):
     """
@@ -1842,6 +2215,10 @@ async def api_hydrate_query(request: HydrateQueryRequest):
 
 # ==================== 数据模板 API ====================
 
+# 端点：GET /api/template/csv
+# 功能：下载 CSV 导入模板（包含表头与示例数据）。
+# 参数：无
+# 返回值：`StreamingResponse(text/csv)`，下载文件名 `import_template.csv`。
 @app.get("/api/template/csv", tags=["Template"])
 async def api_download_csv_template():
     """下载 CSV 导入模板"""
@@ -1856,6 +2233,10 @@ async def api_download_csv_template():
     )
 
 
+# 端点：GET /api/template/excel
+# 功能：下载 Excel 导入模板（包含示例数据，依赖 pandas/openpyxl）。
+# 参数：无
+# 返回值：`StreamingResponse(xlsx)`，下载文件名 `import_template.xlsx`；缺少依赖时返回 500。
 @app.get("/api/template/excel", tags=["Template"])
 async def api_download_excel_template():
     """下载 Excel 导入模板"""
@@ -1892,18 +2273,31 @@ async def api_download_excel_template():
 
 # ==================== 备份相关 API ====================
 
+# 端点：GET /api/backup/status
+# 功能：获取备份系统状态（例如最近备份、空间占用等，具体字段由实现决定）。
+# 参数（Header）：Authorization：`Bearer <token>`（需登录）
+# 返回值：`{success:true, data:<status>}`。
 @app.get("/api/backup/status", tags=["Backup"])
 async def api_backup_status(user: dict = Depends(require_auth)):
     """获取备份状态"""
     return {"success": True, "data": get_backup_status()}
 
 
+# 端点：GET /api/backup/list
+# 功能：列出可用备份文件列表。
+# 参数（Header）：Authorization：`Bearer <token>`（需登录）
+# 返回值：`{success:true, data:<backups>}`。
 @app.get("/api/backup/list", tags=["Backup"])
 async def api_backup_list(user: dict = Depends(require_auth)):
     """获取备份列表"""
     return {"success": True, "data": list_backups()}
 
 
+# 端点：POST /api/backup/create
+# 功能：手动创建备份（若使用托管数据库则提示到云控制台操作）。
+# 参数（Header）：Authorization：`Bearer <token>`（需登录）
+# 权限：仅 admin
+# 返回值：成功返回备份路径；托管数据库返回 success=false；失败返回 500。
 @app.post("/api/backup/create", tags=["Backup"])
 async def api_create_backup(user: dict = Depends(require_auth)):
     """手动创建备份"""
@@ -1918,6 +2312,12 @@ async def api_create_backup(user: dict = Depends(require_auth)):
     raise HTTPException(status_code=500, detail="备份创建失败")
 
 
+# 端点：POST /api/backup/restore/{filename}
+# 功能：从指定备份文件恢复数据库（若使用托管数据库则提示到云控制台恢复）。
+# 参数（Path）：filename 备份文件名
+# 参数（Header）：Authorization：`Bearer <token>`（需登录）
+# 权限：仅 admin
+# 返回值：成功返回 `{success:true}`；托管数据库返回 success=false；失败返回 500。
 @app.post("/api/backup/restore/{filename}", tags=["Backup"])
 async def api_restore_backup(filename: str, user: dict = Depends(require_auth)):
     """恢复备份"""
@@ -1932,6 +2332,12 @@ async def api_restore_backup(filename: str, user: dict = Depends(require_auth)):
     raise HTTPException(status_code=500, detail="备份恢复失败")
 
 
+# 端点：DELETE /api/backup/{filename}
+# 功能：删除指定备份文件。
+# 参数（Path）：filename 备份文件名
+# 参数（Header）：Authorization：`Bearer <token>`（需登录）
+# 权限：仅 admin
+# 返回值：成功返回 `{success:true}`；不存在返回 404。
 @app.delete("/api/backup/{filename}", tags=["Backup"])
 async def api_delete_backup(filename: str, user: dict = Depends(require_auth)):
     """删除备份"""
@@ -1944,6 +2350,11 @@ async def api_delete_backup(filename: str, user: dict = Depends(require_auth)):
     raise HTTPException(status_code=404, detail="备份不存在")
 
 
+# 端点：GET /api/backup/download/{filename}
+# 功能：下载指定备份文件。
+# 参数（Path）：filename 备份文件名
+# 参数（Header）：Authorization：`Bearer <token>`（需登录）
+# 返回值：`FileResponse(application/octet-stream)`；不存在返回 404。
 @app.get("/api/backup/download/{filename}", tags=["Backup"])
 async def api_download_backup(filename: str, user: dict = Depends(require_auth)):
     """下载备份文件"""
@@ -1965,6 +2376,10 @@ async def api_download_backup(filename: str, user: dict = Depends(require_auth))
 ADMIN_DIR = os.path.join(FRONTEND_DIR, "admin")
 
 
+# 端点：GET /admin
+# 功能：返回后台管理页面入口（admin/index.html）。
+# 参数：无
+# 返回值：`FileResponse`；文件不存在时返回 JSON 提示。
 @app.get("/admin", tags=["Admin"])
 async def serve_admin():
     """后台管理页面"""
