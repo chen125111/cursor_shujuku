@@ -19,7 +19,9 @@ def _login_admin(client: TestClient) -> str:
     assert resp.status_code == 200, resp.text
     data = resp.json()
     assert data["success"] is True, data
-    return data["data"]["access_token"]
+    token = data["data"]["access_token"]
+    assert isinstance(token, str)
+    return token
 
 
 def test_records_crud_flow(reset_databases: None, sample_record: dict) -> None:
@@ -35,6 +37,17 @@ def test_records_crud_flow(reset_databases: None, sample_record: dict) -> None:
         payload = r.json()
         assert payload["success"] is True
         record_id = payload["data"]["id"]
+
+        # cached endpoints should not break async handling
+        r = client.get("/api/statistics", headers=_client_headers())
+        assert r.status_code == 200, r.text
+        stats = r.json()
+        assert "total_records" in stats
+
+        r = client.get("/api/charts/temperature", headers=_client_headers())
+        assert r.status_code == 200, r.text
+        chart = r.json()
+        assert "labels" in chart and "data" in chart
 
         # list
         r = client.get("/api/records?page=1&per_page=15", headers=_client_headers())

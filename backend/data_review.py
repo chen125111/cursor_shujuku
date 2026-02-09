@@ -162,10 +162,14 @@ def move_duplicates_to_review() -> Dict:
             group_id = f"G{group_number:04d}"
             
             # 获取这组数据的详细信息
-            ids_str = ','.join(str(x) for x in dup['ids'])
-            cursor.execute(f'''
-                SELECT * FROM gas_mixture WHERE id IN ({ids_str})
-            ''')
+            ids = [int(x) for x in dup["ids"]]
+            if not ids:
+                continue
+            placeholders = ",".join("?" * len(ids))
+            cursor.execute(
+                f"SELECT * FROM gas_mixture WHERE id IN ({placeholders})",
+                ids,
+            )
             
             records = cursor.fetchall()
             
@@ -191,7 +195,10 @@ def move_duplicates_to_review() -> Dict:
                 moved_count += 1
             
             # 从原表删除
-            cursor.execute(f'DELETE FROM gas_mixture WHERE id IN ({ids_str})')
+            cursor.execute(
+                f"DELETE FROM gas_mixture WHERE id IN ({placeholders})",
+                ids,
+            )
             
             group_count += 1
             group_number += 1
@@ -235,7 +242,7 @@ def move_high_pressure_to_review(threshold: float = 50.0) -> Dict:
         group_count = 0
         group_number = _get_next_group_number(cursor)
 
-        for key, group_records in grouped.items():
+        for _key, group_records in grouped.items():
             group_id = f"G{group_number:04d}"
             for record in group_records:
                 cursor.execute('''
@@ -417,10 +424,14 @@ def approve_group(group_id: str, selected_pressures: List[int], username: str = 
         cursor = conn.cursor()
         
         # 获取选中的记录
-        ids_str = ','.join(str(x) for x in selected_pressures)
-        cursor.execute(f'''
-            SELECT * FROM pending_review WHERE id IN ({ids_str}) AND group_id = ?
-        ''', (group_id,))
+        ids = [int(x) for x in selected_pressures if x is not None]
+        if not ids:
+            return {"approved": 0, "group_id": group_id}
+        placeholders = ",".join("?" * len(ids))
+        cursor.execute(
+            f"SELECT * FROM pending_review WHERE id IN ({placeholders}) AND group_id = ?",
+            ids + [group_id],
+        )
 
         records = cursor.fetchall()
         approved_count = 0

@@ -4,22 +4,30 @@
 
 import os
 import shutil
+import sqlite3
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import List, Optional
-import sqlite3
 
 from backend.config import get_backup_dir, get_database_path
 from backend.db import is_mysql
 
 # ==================== 配置 ====================
 
-# 备份目录
-BACKUP_DIR = get_backup_dir()
+def _backup_enabled() -> bool:
+    raw = os.getenv("BACKUP_ENABLED")
+    if raw is None:
+        return True
+    return raw.strip().lower() not in ("0", "false", "no", "off", "")
 
-# 数据库路径
-DATABASE_PATH = get_database_path()
+
+def _backup_dir() -> str:
+    return get_backup_dir()
+
+
+def _database_path() -> str:
+    return get_database_path()
 
 # 保留备份数量
 MAX_BACKUPS = 10
@@ -35,16 +43,17 @@ _backup_running = False
 # ==================== 备份功能 ====================
 
 def is_backup_supported() -> bool:
-    return not is_mysql()
+    return _backup_enabled() and (not is_mysql())
 
 
 def ensure_backup_dir():
     """确保备份目录存在"""
     if not is_backup_supported():
         return
-    if not os.path.exists(BACKUP_DIR):
-        os.makedirs(BACKUP_DIR)
-        print(f"[Backup] 创建备份目录: {BACKUP_DIR}")
+    backup_dir = _backup_dir()
+    if not os.path.exists(backup_dir):
+        os.makedirs(backup_dir)
+        print(f"[Backup] 创建备份目录: {backup_dir}")
 
 
 def create_backup(manual: bool = False) -> Optional[str]:
@@ -60,7 +69,8 @@ def create_backup(manual: bool = False) -> Optional[str]:
         ensure_backup_dir()
         
         # 检查源数据库是否存在
-        if not os.path.exists(DATABASE_PATH):
+        db_path = _database_path()
+        if not os.path.exists(db_path):
             print("[Backup] 数据库文件不存在")
             return None
         
@@ -68,10 +78,10 @@ def create_backup(manual: bool = False) -> Optional[str]:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         backup_type = "manual" if manual else "auto"
         backup_filename = f"gas_data_{backup_type}_{timestamp}.db"
-        backup_path = os.path.join(BACKUP_DIR, backup_filename)
+        backup_path = os.path.join(_backup_dir(), backup_filename)
         
         # 使用 SQLite 的备份 API 进行安全备份
-        source_conn = sqlite3.connect(DATABASE_PATH)
+        source_conn = sqlite3.connect(db_path)
         backup_conn = sqlite3.connect(backup_path)
         
         source_conn.backup(backup_conn)
@@ -105,7 +115,7 @@ def restore_backup(backup_filename: str) -> bool:
         if not is_backup_supported():
             print("[Backup] MySQL 使用托管备份，无法从文件恢复")
             return False
-        backup_path = os.path.join(BACKUP_DIR, backup_filename)
+        backup_path = os.path.join(_backup_dir(), backup_filename)
         
         if not os.path.exists(backup_path):
             print(f"[Backup] 备份文件不存在: {backup_filename}")
@@ -115,7 +125,7 @@ def restore_backup(backup_filename: str) -> bool:
         create_backup(manual=True)
         
         # 恢复备份
-        shutil.copy2(backup_path, DATABASE_PATH)
+        shutil.copy2(backup_path, _database_path())
         
         print(f"[Backup] 恢复成功: {backup_filename}")
         return True
@@ -133,10 +143,11 @@ def list_backups() -> List[dict]:
         return []
     ensure_backup_dir()
     
+    backup_dir = _backup_dir()
     backups = []
-    for filename in os.listdir(BACKUP_DIR):
+    for filename in os.listdir(backup_dir):
         if filename.endswith('.db'):
-            filepath = os.path.join(BACKUP_DIR, filename)
+            filepath = os.path.join(backup_dir, filename)
             stat = os.stat(filepath)
             
             # 解析备份类型和时间
@@ -163,7 +174,7 @@ def delete_backup(backup_filename: str) -> bool:
     try:
         if not is_backup_supported():
             return False
-        backup_path = os.path.join(BACKUP_DIR, backup_filename)
+        backup_path = os.path.join(_backup_dir(), backup_filename)
         if os.path.exists(backup_path):
             os.remove(backup_path)
             print(f"[Backup] 删除备份: {backup_filename}")
@@ -241,6 +252,17 @@ def stop_auto_backup():
 
 def get_backup_status() -> dict:
     """获取备份状态"""
+    if not _backup_enabled():
+        return {
+            "auto_backup_enabled": False,
+            "backup_interval_hours": 0,
+            "backup_count": 0,
+            "total_size": format_size(0),
+            "max_backups": MAX_BACKUPS,
+            "backup_dir": _backup_dir(),
+            "last_backup": None,
+            "managed_by": "disabled",
+        }
     if not is_backup_supported():
         return {
             'auto_backup_enabled': False,
@@ -248,7 +270,7 @@ def get_backup_status() -> dict:
             'backup_count': 0,
             'total_size': format_size(0),
             'max_backups': MAX_BACKUPS,
-            'backup_dir': BACKUP_DIR,
+            'backup_dir': _backup_dir(),
             'last_backup': None,
             'managed_by': 'rds'
         }
@@ -261,7 +283,7 @@ def get_backup_status() -> dict:
         'backup_count': len(backups),
         'total_size': format_size(total_size),
         'max_backups': MAX_BACKUPS,
-        'backup_dir': BACKUP_DIR,
+        'backup_dir': _backup_dir(),
         'last_backup': backups[0]['created_at'] if backups else None
     }
 
@@ -270,6 +292,9 @@ def get_backup_status() -> dict:
 
 def init_backup_system():
     """初始化备份系统"""
+    if not _backup_enabled():
+        print("[Backup] 备份已通过 BACKUP_ENABLED 禁用")
+        return
     if not is_backup_supported():
         print("[Backup] MySQL 使用托管备份，自动备份已跳过")
         return

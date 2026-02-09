@@ -44,9 +44,9 @@ def init_databases() -> None:
     初始化业务数据库/安全数据库（幂等）。
     """
     # 延迟导入，确保使用测试环境变量
+    from backend import data_review as data_review_module
     from backend import database as database_module
     from backend import security as security_module
-    from backend import data_review as data_review_module
 
     importlib.reload(database_module)
     importlib.reload(security_module)
