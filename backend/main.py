@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, StreamingResponse, Response
 from typing import Optional, List
+from datetime import datetime
 from pydantic import BaseModel
 import os
 import io
@@ -24,7 +25,7 @@ from backend.database import (
     create_record, delete_record, update_record,
     get_record_by_id, get_all_records, get_statistics,
     get_chart_data, batch_create_records, get_all_records_no_pagination,
-    batch_delete_records, batch_update_records
+    batch_delete_records, batch_update_records, get_records_for_export
 )
 from backend.auth import (
     authenticate_user, create_access_token, get_current_user,
@@ -42,7 +43,9 @@ from backend.security import (
     get_login_logs, create_session, validate_session, revoke_session,
     get_user_sessions, revoke_all_user_sessions, validate_password,
     get_password_policy, record_audit_log, get_audit_logs,
-    record_data_history, get_data_history, get_rate_limit_status
+    record_data_history, get_data_history, get_rate_limit_status,
+    record_query_history, get_query_history, add_query_favorite,
+    list_query_favorites, delete_query_favorite
 )
 from backend.data_review import (
     find_duplicate_pressure_records, move_duplicates_to_review,
@@ -84,6 +87,28 @@ def require_auth(authorization: Optional[str] = Header(None)):
 
     return user
 
+
+def get_optional_user(authorization: Optional[str]) -> Optional[dict]:
+    """可选认证（有令牌就解析，无令牌则忽略）"""
+    token = get_token_from_header(authorization)
+    if not token:
+        return None
+    return get_current_user(token)
+
+
+def record_query_if_needed(user: Optional[dict], query_type: str, parameters: dict,
+                           result_summary: dict, success: bool) -> None:
+    """记录查询历史（仅在用户已认证时）"""
+    if not user:
+        return
+    record_query_history(
+        username=user.get("username"),
+        query_type=query_type,
+        parameters=parameters,
+        result_summary=result_summary,
+        success=success,
+    )
+
 # ==================== Pydantic 模型 ====================
 
 class LoginRequest(BaseModel):
@@ -113,6 +138,34 @@ class BatchUpdateRequest(BaseModel):
 class TOTPSetupRequest(BaseModel):
     code: str
 
+
+class QueryFavoriteRequest(BaseModel):
+    name: Optional[str] = None
+    query_type: str
+    parameters: dict
+    notes: Optional[str] = None
+
+
+class BatchHydrateQueryItem(BaseModel):
+    label: Optional[str] = None
+    components: dict
+    temperature: float
+    tolerance: float = 0.02
+
+
+class BatchHydrateQueryRequest(BaseModel):
+    items: List[BatchHydrateQueryItem]
+
+
+class BatchComponentsQueryItem(BaseModel):
+    label: Optional[str] = None
+    components: List[str]
+    temperature: float
+
+
+class BatchComponentsQueryRequest(BaseModel):
+    items: List[BatchComponentsQueryItem]
+
 # 创建 FastAPI 应用
 app = FastAPI(
     title="气体混合物数据管理系统 API",
@@ -131,6 +184,143 @@ def format_soft_warning_count(count: int) -> str:
     if count <= 0:
         return ""
     return f"（注意：{count} 条记录压力高于 {PRESSURE_SOFT_MAX:.0f} MPa，可能为异常值）"
+
+
+ALL_COMPONENTS = ['x_ch4', 'x_c2h6', 'x_c3h8', 'x_co2', 'x_n2', 'x_h2s', 'x_ic4h10']
+
+
+def query_by_components_core(components: List[str], temperature: float):
+    """按组分组合 + 温度查询"""
+    try:
+        with get_connection(dict_cursor=True) as conn:
+            cursor = conn.cursor()
+
+            # 构建查询条件：已选组分 > 0，未选组分 <= 0.02
+            conditions = []
+            for comp in components:
+                conditions.append(f"{comp} > 0")
+            for comp in ALL_COMPONENTS:
+                if comp not in components:
+                    conditions.append(f"{comp} <= 0.02")
+
+            # 温度范围 ±5K
+            conditions.append("ABS(temperature - ?) <= 5")
+            where_clause = " AND ".join(conditions)
+
+            query = f"""
+                SELECT temperature, pressure, {', '.join(ALL_COMPONENTS)}
+                FROM gas_mixture
+                WHERE {where_clause}
+                ORDER BY ABS(temperature - ?)
+                LIMIT 1
+            """
+
+            cursor.execute(query, [temperature, temperature])
+            row = cursor.fetchone()
+
+            if row:
+                composition = {comp: row[comp] for comp in ALL_COMPONENTS}
+                return True, {
+                    "temperature": row['temperature'],
+                    "pressure": row['pressure'],
+                    "composition": composition
+                }, None
+            return False, None, "在指定的温度范围内未找到数据"
+    except Exception as exc:
+        return False, None, str(exc)
+
+
+def hydrate_query_core(components: dict, temperature: float, tolerance: float = 0.02):
+    """气体水合物相平衡查询核心逻辑"""
+    try:
+        with get_connection(dict_cursor=True) as conn:
+            cursor = conn.cursor()
+
+            conditions = []
+            params = []
+
+            for col in ALL_COMPONENTS:
+                user_val = components.get(col, 0)
+                if user_val > 0.001:
+                    conditions.append(f"ABS({col} - ?) <= ?")
+                    params.extend([user_val, tolerance])
+                else:
+                    conditions.append(f"{col} <= ?")
+                    params.append(tolerance)
+
+            conditions.append("ABS(temperature - ?) <= 5")
+            params.append(temperature)
+
+            where_clause = " AND ".join(conditions)
+
+            query = f"""
+                SELECT temperature, pressure, {', '.join(ALL_COMPONENTS)}
+                FROM gas_mixture
+                WHERE {where_clause}
+                ORDER BY ABS(temperature - ?)
+                LIMIT 1
+            """
+            params.append(temperature)
+
+            cursor.execute(query, params)
+            row = cursor.fetchone()
+
+            if row:
+                match_score = 100
+                for col in ALL_COMPONENTS:
+                    user_val = components.get(col, 0)
+                    db_val = row[col]
+                    diff = abs(user_val - db_val)
+                    if diff > 0.001:
+                        match_score -= diff * 100
+
+                temp_diff = abs(row['temperature'] - temperature)
+                match_score -= temp_diff * 2
+
+                match_score = max(0, min(100, round(match_score)))
+                return True, {
+                    "temperature": row['temperature'],
+                    "pressure": row['pressure'],
+                    "match_score": match_score
+                }, None
+            return False, None, "未找到匹配的实验数据，请调整组分或温度"
+    except Exception as exc:
+        return False, None, str(exc)
+
+
+def build_pressure_comparison(results: List[dict]) -> dict:
+    """构建批量查询对比摘要"""
+    success_items = [item for item in results if item.get("success") and item.get("data")]
+    if not success_items:
+        return {
+            "success_count": 0,
+            "min_pressure": None,
+            "max_pressure": None,
+            "avg_pressure": None,
+            "pressure_range": None,
+            "sorted": [],
+        }
+
+    pressures = [item["data"]["pressure"] for item in success_items]
+    min_pressure = min(pressures)
+    max_pressure = max(pressures)
+    avg_pressure = sum(pressures) / len(pressures)
+
+    sorted_items = sorted(success_items, key=lambda x: x["data"]["pressure"])
+    sorted_summary = [{
+        "label": item.get("label") or f"#{item.get('index')}",
+        "pressure": item["data"]["pressure"],
+        "temperature": item["data"]["temperature"],
+    } for item in sorted_items]
+
+    return {
+        "success_count": len(success_items),
+        "min_pressure": min_pressure,
+        "max_pressure": max_pressure,
+        "avg_pressure": round(avg_pressure, 6),
+        "pressure_range": round(max_pressure - min_pressure, 6),
+        "sorted": sorted_summary,
+    }
 
 # 配置跨域 (CORS) - 允许前端访问
 cors_origins = get_cors_origins()
@@ -419,7 +609,8 @@ async def api_query_by_composition(
     x_h2s: Optional[float] = Query(None, description="H2S 摩尔分数"),
     x_ic4h10: Optional[float] = Query(None, description="i-C4H10 摩尔分数"),
     tolerance: float = Query(0.02, description="允许的误差范围，默认2%"),
-    strict: bool = Query(True, description="严格模式：未输入的组分要求接近0")
+    strict: bool = Query(True, description="严格模式：未输入的组分要求接近0"),
+    authorization: Optional[str] = Header(None)
 ):
     """根据气体组分查询温度和压力"""
     from backend.database import query_by_composition
@@ -441,6 +632,14 @@ async def api_query_by_composition(
         return {"success": False, "message": "请至少输入一个组分", "data": []}
     
     results = query_by_composition(composition, tolerance, strict_mode=strict)
+    user = get_optional_user(authorization)
+    record_query_if_needed(
+        user,
+        "composition",
+        {"composition": composition, "tolerance": tolerance, "strict": strict},
+        {"count": len(results)},
+        True,
+    )
     return {"success": True, "data": results, "count": len(results)}
 
 
@@ -647,6 +846,83 @@ async def api_export_excel(user: dict = Depends(require_auth)):
         )
     except ImportError:
         raise HTTPException(status_code=500, detail="需要安装 pandas 和 openpyxl")
+
+
+@app.get("/api/export/pdf", tags=["Export"])
+async def api_export_pdf(
+    user: dict = Depends(require_auth),
+    limit: int = Query(500, ge=1, le=5000),
+):
+    """导出数据为 PDF 文件"""
+    try:
+        from reportlab.lib.pagesizes import A4, landscape
+        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+        from reportlab.lib import colors
+        from reportlab.lib.styles import getSampleStyleSheet
+    except ImportError:
+        raise HTTPException(status_code=500, detail="需要安装 reportlab")
+
+    records = get_records_for_export(limit)
+    if not records:
+        raise HTTPException(status_code=404, detail="没有可导出的数据")
+
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=landscape(A4),
+        leftMargin=18,
+        rightMargin=18,
+        topMargin=18,
+        bottomMargin=18,
+    )
+
+    styles = getSampleStyleSheet()
+    elements = [
+        Paragraph("Gas Hydrate Data Export", styles["Title"]),
+        Spacer(1, 8),
+    ]
+
+    headers = [
+        "ID", "T (K)", "xCH4", "xC2H6", "xC3H8",
+        "xCO2", "xN2", "xH2S", "x i-C4H10", "p (MPa)"
+    ]
+    table_data = [headers]
+
+    for r in records:
+        table_data.append([
+            r.get("id", ""),
+            f"{r.get('temperature', 0):.3f}",
+            f"{r.get('x_ch4', 0):.4f}",
+            f"{r.get('x_c2h6', 0):.4f}",
+            f"{r.get('x_c3h8', 0):.4f}",
+            f"{r.get('x_co2', 0):.4f}",
+            f"{r.get('x_n2', 0):.4f}",
+            f"{r.get('x_h2s', 0):.4f}",
+            f"{r.get('x_ic4h10', 0):.4f}",
+            f"{r.get('pressure', 0):.3f}",
+        ])
+
+    table = Table(table_data, repeatRows=1)
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1f2937")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, 0), 9),
+        ("FONTSIZE", (0, 1), (-1, -1), 8),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#94a3b8")),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.whitesmoke, colors.HexColor("#f1f5f9")]),
+    ]))
+
+    elements.append(table)
+    doc.build(elements)
+    buffer.seek(0)
+
+    return StreamingResponse(
+        buffer,
+        media_type="application/pdf",
+        headers={"Content-Disposition": "attachment; filename=gas_data_export.pdf"}
+    )
 
 
 @app.post("/api/import", tags=["Import"])
@@ -1412,7 +1688,7 @@ async def api_available_components(request: AvailableComponentsRequest):
     """
     selected = request.selected
 
-    all_components = ['x_ch4', 'x_c2h6', 'x_c3h8', 'x_co2', 'x_n2', 'x_h2s', 'x_ic4h10']
+    all_components = ALL_COMPONENTS
     
     try:
         with get_connection(dict_cursor=True) as conn:
@@ -1466,7 +1742,7 @@ async def api_component_ranges(request: ComponentRangesRequest):
     """
     components = request.components
 
-    all_components = ['x_ch4', 'x_c2h6', 'x_c3h8', 'x_co2', 'x_n2', 'x_h2s', 'x_ic4h10']
+    all_components = ALL_COMPONENTS
     
     try:
         with get_connection(dict_cursor=True) as conn:
@@ -1528,67 +1804,36 @@ class QueryByComponentsRequest(BaseModel):
     temperature: float
 
 @app.post("/api/query/by-components", tags=["Public Query"])
-async def api_query_by_components(request: QueryByComponentsRequest):
+async def api_query_by_components(
+    request: QueryByComponentsRequest,
+    authorization: Optional[str] = Header(None),
+):
     """
     根据组分组合和温度查询相平衡压力
     """
     components = request.components
     temperature = request.temperature
 
-    all_components = ['x_ch4', 'x_c2h6', 'x_c3h8', 'x_co2', 'x_n2', 'x_h2s', 'x_ic4h10']
-    
-    try:
-        with get_connection(dict_cursor=True) as conn:
-            cursor = conn.cursor()
+    success, data, message = query_by_components_core(components, temperature)
+    user = get_optional_user(authorization)
+    record_query_if_needed(
+        user,
+        "by-components",
+        {"components": components, "temperature": temperature},
+        {"temperature": data["temperature"], "pressure": data["pressure"]} if data else {"message": message},
+        success,
+    )
 
-            # 构建查询条件：已选组分 > 0，未选组分 <= 0.02
-            conditions = []
-            for comp in components:
-                conditions.append(f"{comp} > 0")
-            for comp in all_components:
-                if comp not in components:
-                    conditions.append(f"{comp} <= 0.02")
-
-            # 温度范围 ±5K
-            conditions.append("ABS(temperature - ?) <= 5")
-
-            where_clause = " AND ".join(conditions)
-
-            query = f"""
-                SELECT temperature, pressure, {', '.join(all_components)}
-                FROM gas_mixture
-                WHERE {where_clause}
-                ORDER BY ABS(temperature - ?)
-                LIMIT 1
-            """
-
-            cursor.execute(query, [temperature, temperature])
-            row = cursor.fetchone()
-
-            if row:
-                composition = {}
-                for comp in all_components:
-                    composition[comp] = row[comp]
-
-                return {
-                    "success": True,
-                    "data": {
-                        "temperature": row['temperature'],
-                        "pressure": row['pressure'],
-                        "composition": composition
-                    }
-                }
-            return {
-                "success": False,
-                "message": "在指定的温度范围内未找到数据"
-            }
-            
-    except Exception as e:
-        return {"success": False, "message": str(e)}
+    if success and data:
+        return {"success": True, "data": data}
+    return {"success": False, "message": message}
 
 
 @app.post("/api/query/range", tags=["Public Query"])
-async def api_range_query(request: RangeQueryRequest):
+async def api_range_query(
+    request: RangeQueryRequest,
+    authorization: Optional[str] = Header(None),
+):
     """
     根据组分范围和温度查询相平衡压力
     """
@@ -1596,8 +1841,9 @@ async def api_range_query(request: RangeQueryRequest):
     ranges = request.ranges
     temperature = request.temperature
 
-    all_components = ['x_ch4', 'x_c2h6', 'x_c3h8', 'x_co2', 'x_n2', 'x_h2s', 'x_ic4h10']
+    all_components = ALL_COMPONENTS
     
+    user = get_optional_user(authorization)
     try:
         with get_connection(dict_cursor=True) as conn:
             cursor = conn.cursor()
@@ -1635,19 +1881,33 @@ async def api_range_query(request: RangeQueryRequest):
             row = cursor.fetchone()
 
             if row:
-                return {
-                    "success": True,
-                    "data": {
-                        "temperature": row['temperature'],
-                        "pressure": row['pressure']
-                    }
-                }
-            return {
-                "success": False,
-                "message": "在指定的组分范围和温度下未找到数据"
-            }
-            
+                data = {"temperature": row['temperature'], "pressure": row['pressure']}
+                record_query_if_needed(
+                    user,
+                    "range",
+                    {"components": components, "ranges": ranges, "temperature": temperature},
+                    data,
+                    True,
+                )
+                return {"success": True, "data": data}
+
+            record_query_if_needed(
+                user,
+                "range",
+                {"components": components, "ranges": ranges, "temperature": temperature},
+                {"message": "在指定的组分范围和温度下未找到数据"},
+                False,
+            )
+            return {"success": False, "message": "在指定的组分范围和温度下未找到数据"}
+
     except Exception as e:
+        record_query_if_needed(
+            user,
+            "range",
+            {"components": components, "ranges": ranges, "temperature": temperature},
+            {"message": str(e)},
+            False,
+        )
         return {"success": False, "message": str(e)}
 
 
@@ -1664,7 +1924,7 @@ async def api_match_count(request: MatchCountRequest):
     components = request.components
     ranges = request.ranges
 
-    all_components = ['x_ch4', 'x_c2h6', 'x_c3h8', 'x_co2', 'x_n2', 'x_h2s', 'x_ic4h10']
+    all_components = ALL_COMPONENTS
     
     try:
         with get_connection(dict_cursor=True) as conn:
@@ -1716,7 +1976,10 @@ class HydrateQueryRequest(BaseModel):
     tolerance: float = 0.02  # 默认2%容差
 
 @app.post("/api/query/hydrate", tags=["Public Query"])
-async def api_hydrate_query(request: HydrateQueryRequest):
+async def api_hydrate_query(
+    request: HydrateQueryRequest,
+    authorization: Optional[str] = Header(None),
+):
     """
     气体水合物相平衡查询接口
     - 用户输入组分摩尔分数 + 温度
@@ -1726,78 +1989,176 @@ async def api_hydrate_query(request: HydrateQueryRequest):
     components = request.components
     temperature = request.temperature
     tolerance = request.tolerance
-    
-    # 组分列表
-    comp_cols = ['x_ch4', 'x_c2h6', 'x_c3h8', 'x_co2', 'x_n2', 'x_h2s', 'x_ic4h10']
-    
-    try:
-        with get_connection(dict_cursor=True) as conn:
-            cursor = conn.cursor()
 
-            # 构建查询 - 先按组分筛选，再按温度排序
-            conditions = []
-            params = []
+    success, data, message = hydrate_query_core(components, temperature, tolerance)
+    user = get_optional_user(authorization)
+    record_query_if_needed(
+        user,
+        "hydrate",
+        {"components": components, "temperature": temperature, "tolerance": tolerance},
+        data if data else {"message": message},
+        success,
+    )
 
-            for col in comp_cols:
-                user_val = components.get(col, 0)
-                if user_val > 0.001:  # 用户输入了该组分
-                    # 允许一定容差
-                    conditions.append(f"ABS({col} - ?) <= ?")
-                    params.extend([user_val, tolerance])
-                else:
-                    # 用户没输入该组分，要求数据库中也接近0
-                    conditions.append(f"{col} <= ?")
-                    params.append(tolerance)
+    if success and data:
+        return {"success": True, "data": data}
+    return {"success": False, "message": message}
 
-            # 温度筛选 - 允许±5K范围
-            conditions.append("ABS(temperature - ?) <= 5")
-            params.append(temperature)
 
-            where_clause = " AND ".join(conditions)
+# ==================== 批量查询/对比 API ====================
 
-            # 查询并计算匹配度
-            query = f"""
-                SELECT temperature, pressure, x_ch4, x_c2h6, x_c3h8, x_co2, x_n2, x_h2s, x_ic4h10
-                FROM gas_mixture
-                WHERE {where_clause}
-                ORDER BY ABS(temperature - ?)
-                LIMIT 1
-            """
-            params.append(temperature)
+@app.post("/api/query/batch/hydrate", tags=["Public Query"])
+async def api_batch_hydrate_query(
+    request: BatchHydrateQueryRequest,
+    authorization: Optional[str] = Header(None),
+):
+    """批量水合物查询并返回对比摘要"""
+    if not request.items:
+        raise HTTPException(status_code=400, detail="未提供查询条目")
+    if len(request.items) > 100:
+        raise HTTPException(status_code=400, detail="批量查询条目过多（最多100条）")
 
-            cursor.execute(query, params)
-            row = cursor.fetchone()
+    results = []
+    for idx, item in enumerate(request.items, start=1):
+        success, data, message = hydrate_query_core(
+            item.components,
+            item.temperature,
+            item.tolerance,
+        )
+        results.append({
+            "index": idx,
+            "label": item.label,
+            "components": item.components,
+            "temperature": item.temperature,
+            "tolerance": item.tolerance,
+            "success": success,
+            "data": data,
+            "message": message,
+        })
 
-            if row:
-                # 计算匹配度分数
-                match_score = 100
-                for col in comp_cols:
-                    user_val = components.get(col, 0)
-                    db_val = row[col]
-                    diff = abs(user_val - db_val)
-                    if diff > 0.001:
-                        match_score -= diff * 100  # 每1%差异扣1分
+    comparison = build_pressure_comparison(results)
+    user = get_optional_user(authorization)
+    record_query_if_needed(
+        user,
+        "batch-hydrate",
+        {"count": len(request.items), "items": [item.model_dump() for item in request.items]},
+        {"comparison": comparison},
+        comparison["success_count"] > 0,
+    )
 
-                temp_diff = abs(row['temperature'] - temperature)
-                match_score -= temp_diff * 2  # 每1K温差扣2分
+    return {
+        "success": True,
+        "data": {
+            "results": results,
+            "comparison": comparison,
+            "total": len(results),
+        },
+    }
 
-                match_score = max(0, min(100, round(match_score)))
 
-                return {
-                    "success": True,
-                    "data": {
-                        "temperature": row['temperature'],
-                        "pressure": row['pressure'],
-                        "match_score": match_score
-                    }
-                }
-            return {
-                "success": False,
-                "message": "未找到匹配的实验数据，请调整组分或温度"
-            }
-            
-    except Exception as e:
-        return {"success": False, "message": str(e)}
+@app.post("/api/query/batch/by-components", tags=["Public Query"])
+async def api_batch_components_query(
+    request: BatchComponentsQueryRequest,
+    authorization: Optional[str] = Header(None),
+):
+    """批量按组分组合查询并返回对比摘要"""
+    if not request.items:
+        raise HTTPException(status_code=400, detail="未提供查询条目")
+    if len(request.items) > 100:
+        raise HTTPException(status_code=400, detail="批量查询条目过多（最多100条）")
+
+    results = []
+    for idx, item in enumerate(request.items, start=1):
+        success, data, message = query_by_components_core(
+            item.components,
+            item.temperature,
+        )
+        results.append({
+            "index": idx,
+            "label": item.label,
+            "components": item.components,
+            "temperature": item.temperature,
+            "success": success,
+            "data": data,
+            "message": message,
+        })
+
+    comparison = build_pressure_comparison(results)
+    user = get_optional_user(authorization)
+    record_query_if_needed(
+        user,
+        "batch-by-components",
+        {"count": len(request.items), "items": [item.model_dump() for item in request.items]},
+        {"comparison": comparison},
+        comparison["success_count"] > 0,
+    )
+
+    return {
+        "success": True,
+        "data": {
+            "results": results,
+            "comparison": comparison,
+            "total": len(results),
+        },
+    }
+
+
+# ==================== 查询历史/收藏 API ====================
+
+@app.get("/api/query/history", tags=["Query History"])
+async def api_query_history(
+    user: dict = Depends(require_auth),
+    query_type: Optional[str] = None,
+    success: Optional[bool] = None,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+):
+    """获取当前用户的查询历史"""
+    items, total = get_query_history(
+        username=user["username"],
+        query_type=query_type,
+        success=success,
+        limit=limit,
+        offset=offset,
+    )
+    return {"success": True, "data": {"items": items, "total": total}}
+
+
+@app.get("/api/query/favorites", tags=["Query Favorites"])
+async def api_list_query_favorites(user: dict = Depends(require_auth)):
+    """获取当前用户的查询收藏"""
+    return {"success": True, "data": list_query_favorites(user["username"])}
+
+
+@app.post("/api/query/favorites", tags=["Query Favorites"])
+async def api_add_query_favorite(request: QueryFavoriteRequest, user: dict = Depends(require_auth)):
+    """新增查询收藏"""
+    allowed = {"hydrate", "by-components", "range", "composition", "batch-hydrate", "batch-by-components"}
+    query_type = request.query_type.strip()
+    if query_type not in allowed:
+        raise HTTPException(status_code=400, detail="不支持的查询类型")
+
+    name = request.name or f"{query_type}-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
+    favorite_id = add_query_favorite(
+        username=user["username"],
+        name=name,
+        query_type=query_type,
+        parameters=request.parameters,
+        notes=request.notes,
+    )
+    if not favorite_id:
+        raise HTTPException(status_code=500, detail="收藏保存失败")
+
+    return {"success": True, "data": {"id": favorite_id, "name": name}}
+
+
+@app.delete("/api/query/favorites/{favorite_id}", tags=["Query Favorites"])
+async def api_delete_query_favorite(favorite_id: int, user: dict = Depends(require_auth)):
+    """删除查询收藏"""
+    deleted = delete_query_favorite(user["username"], favorite_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="收藏不存在或无权限")
+    return {"success": True, "message": "收藏已删除"}
 
 
 # ==================== 数据模板 API ====================
