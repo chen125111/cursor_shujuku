@@ -1,6 +1,10 @@
 """
 数据库操作模块
-使用 SQLite 数据库
+提供气体混合物数据表（gas_mixture）的读写与查询能力。
+
+说明：
+- 默认使用 SQLite（文件数据库），也支持通过环境变量切换到 MySQL（详见 `backend/db.py`）
+- 本模块函数尽量保持“纯数据访问层”职责：不做认证、不处理 HTTP 细节
 """
 
 from typing import List, Dict, Optional, Any
@@ -9,6 +13,15 @@ from backend.db import get_connection, is_mysql
 
 
 def _ensure_index(cursor, table: str, index_name: str, columns: str) -> None:
+    """
+    确保索引存在（SQLite 使用 IF NOT EXISTS；MySQL 通过 information_schema 判断）。
+
+    Args:
+        cursor: 数据库游标（需要支持 `execute` / `fetchone`）
+        table: 表名
+        index_name: 索引名
+        columns: 索引列定义字符串（例如 `"temperature, pressure"`）
+    """
     if is_mysql():
         cursor.execute(
             """
@@ -28,7 +41,16 @@ def _ensure_index(cursor, table: str, index_name: str, columns: str) -> None:
 
 
 def init_database():
-    """初始化数据库，创建数据表"""
+    """
+    初始化业务数据库，创建 `gas_mixture` 数据表与必要索引。
+
+    Returns:
+        None
+
+    Notes:
+        - 本函数在模块导入时会被调用一次（见文件末尾），用于确保表结构存在。
+        - 若使用 MySQL，会根据不同方言调整主键列定义。
+    """
     id_column = "BIGINT PRIMARY KEY AUTO_INCREMENT" if is_mysql() else "INTEGER PRIMARY KEY AUTOINCREMENT"
     with get_connection(dict_cursor=True) as conn:
         cursor = conn.cursor()
@@ -63,7 +85,18 @@ def init_database():
 
 # ==================== 增 (Create) ====================
 def create_record(data: Dict[str, Any]) -> int:
-    """创建新记录"""
+    """
+    创建一条气体混合物记录。
+
+    Args:
+        data: 记录字段字典。常用字段包括：
+            - temperature: 温度（K）
+            - pressure: 压力（MPa）
+            - x_ch4/x_c2h6/x_c3h8/x_co2/x_n2/x_h2s/x_ic4h10: 各组分摩尔分数
+
+    Returns:
+        新插入记录的自增 ID。
+    """
     with get_connection(dict_cursor=True) as conn:
         cursor = conn.cursor()
         cursor.execute('''
@@ -87,7 +120,15 @@ def create_record(data: Dict[str, Any]) -> int:
 
 # ==================== 删 (Delete) ====================
 def delete_record(record_id: int) -> bool:
-    """删除指定ID的记录"""
+    """
+    删除指定 ID 的记录。
+
+    Args:
+        record_id: 记录 ID
+
+    Returns:
+        是否删除成功（当记录存在且被删除时返回 True）。
+    """
     with get_connection(dict_cursor=True) as conn:
         cursor = conn.cursor()
         cursor.execute('DELETE FROM gas_mixture WHERE id = ?', (record_id,))
@@ -97,7 +138,16 @@ def delete_record(record_id: int) -> bool:
 
 # ==================== 改 (Update) ====================
 def update_record(record_id: int, data: Dict[str, Any]) -> bool:
-    """更新指定ID的记录"""
+    """
+    更新指定 ID 的记录（仅更新传入且非 None 的字段）。
+
+    Args:
+        record_id: 记录 ID
+        data: 待更新字段字典（仅允许更新白名单字段）。
+
+    Returns:
+        是否更新成功（当记录存在且至少一个字段被更新时返回 True）。
+    """
     fields = []
     values = []
     
@@ -134,7 +184,15 @@ def update_record(record_id: int, data: Dict[str, Any]) -> bool:
 
 # ==================== 查 (Read) ====================
 def get_record_by_id(record_id: int) -> Optional[Dict]:
-    """根据ID获取单条记录"""
+    """
+    根据 ID 获取单条记录。
+
+    Args:
+        record_id: 记录 ID
+
+    Returns:
+        记录字典；若不存在返回 None。
+    """
     with get_connection(dict_cursor=True) as conn:
         cursor = conn.cursor()
         cursor.execute('SELECT * FROM gas_mixture WHERE id = ?', (record_id,))
@@ -150,7 +208,23 @@ def get_all_records(
     pressure_min: Optional[float] = None,
     pressure_max: Optional[float] = None
 ) -> Dict:
-    """获取所有记录（分页+筛选）"""
+    """
+    获取记录列表（分页 + 温度/压力范围筛选）。
+
+    Args:
+        page: 页码（从 1 开始）
+        per_page: 每页数量
+        temp_min: 温度下限（K）
+        temp_max: 温度上限（K）
+        pressure_min: 压力下限（MPa）
+        pressure_max: 压力上限（MPa）
+
+    Returns:
+        分页结果字典，包含：
+        - records: 当前页记录列表
+        - total: 总记录数
+        - page/per_page/total_pages: 分页信息
+    """
     conditions = []
     values = []
     
@@ -197,7 +271,12 @@ def get_all_records(
 
 
 def get_statistics() -> Dict:
-    """获取数据统计信息"""
+    """
+    获取数据统计信息（记录数、温度/压力 min/max/avg）。
+
+    Returns:
+        统计信息字典；当表为空时返回空字典。
+    """
     with get_connection(dict_cursor=True) as conn:
         cursor = conn.cursor()
         cursor.execute('''
@@ -216,7 +295,12 @@ def get_statistics() -> Dict:
 
 
 def get_all_records_no_pagination() -> List[Dict]:
-    """获取所有记录（不分页，用于导出）"""
+    """
+    获取全部记录（不分页，用于导出）。
+
+    Returns:
+        全量记录列表（按 id 升序）。
+    """
     with get_connection(dict_cursor=True) as conn:
         cursor = conn.cursor()
         cursor.execute('SELECT * FROM gas_mixture ORDER BY id ASC')
@@ -224,7 +308,15 @@ def get_all_records_no_pagination() -> List[Dict]:
 
 
 def batch_create_records(records: List[Dict[str, Any]]) -> int:
-    """批量创建记录"""
+    """
+    批量插入记录（用于导入场景）。
+
+    Args:
+        records: 记录字典列表（字段含义同 `create_record`）
+
+    Returns:
+        实际插入的行数（由数据库驱动返回，通常等于 records 长度）。
+    """
     with get_connection(dict_cursor=True) as conn:
         cursor = conn.cursor()
         cursor.executemany('''
@@ -249,7 +341,18 @@ def batch_create_records(records: List[Dict[str, Any]]) -> int:
 
 
 def get_chart_data(chart_type: str) -> Dict:
-    """获取图表数据"""
+    """
+    生成前端图表所需的聚合数据。
+
+    Args:
+        chart_type: 图表类型，支持：
+            - temperature: 温度分布（分桶直方图）
+            - pressure: 压力分布（区间统计）
+            - scatter: 温度-压力散点（抽样）
+
+    Returns:
+        图表数据字典（结构会随 chart_type 不同而不同）。
+    """
     with get_connection(dict_cursor=True) as conn:
         cursor = conn.cursor()
         
@@ -326,9 +429,14 @@ def get_chart_data(chart_type: str) -> Dict:
 def query_by_composition(composition: Dict[str, float], tolerance: float = 0.05, strict_mode: bool = True) -> List[Dict]:
     """
     根据气体组分查询匹配的温度和压力
-    composition: 组分字典，如 {'x_ch4': 0.9, 'x_c2h6': 0.05}
-    tolerance: 允许的误差范围（默认5%）
-    strict_mode: 严格模式，未输入的组分要求接近0
+
+    Args:
+        composition: 组分字典，如 `{'x_ch4': 0.9, 'x_c2h6': 0.05}`
+        tolerance: 允许的误差范围（默认 0.05）
+        strict_mode: 严格模式：未输入的组分要求接近 0（<= tolerance）
+
+    Returns:
+        匹配到的记录列表（最多 100 条），按温度/压力排序。
     """
     all_components = ['x_ch4', 'x_c2h6', 'x_c3h8', 'x_co2', 'x_n2', 'x_h2s', 'x_ic4h10']
     
@@ -374,7 +482,15 @@ def query_by_composition(composition: Dict[str, float], tolerance: float = 0.05,
 # ==================== 批量操作 ====================
 
 def batch_delete_records(ids: List[int]) -> int:
-    """批量删除记录"""
+    """
+    批量删除记录（管理员操作常用）。
+
+    Args:
+        ids: 记录 ID 列表
+
+    Returns:
+        实际删除的记录数。
+    """
     if not ids:
         return 0
     
@@ -387,7 +503,16 @@ def batch_delete_records(ids: List[int]) -> int:
 
 
 def batch_update_records(ids: List[int], updates: Dict[str, Any]) -> int:
-    """批量更新记录"""
+    """
+    批量更新记录（管理员操作常用）。
+
+    Args:
+        ids: 记录 ID 列表
+        updates: 更新字段字典（仅允许更新白名单字段；None 值会被忽略）
+
+    Returns:
+        实际更新的记录数。
+    """
     if not ids or not updates:
         return 0
     

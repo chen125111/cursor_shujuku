@@ -79,10 +79,29 @@ _redis_client = None
 
 
 def _redis_key(suffix: str) -> str:
+    """
+    生成带前缀的 Redis key。
+
+    Args:
+        suffix: key 后缀（不含前缀）
+
+    Returns:
+        完整 key（形如 `{REDIS_PREFIX}:{suffix}`）。
+    """
     return f"{REDIS_PREFIX}:{suffix}"
 
 
 def get_redis_client():
+    """
+    获取（并懒加载初始化）Redis 客户端。
+
+    Returns:
+        redis.Redis 客户端；当未配置 REDIS_URL 或未安装 redis 包时返回 None。
+
+    Notes:
+        - 该函数内部做了简单的连接创建与缓存（_redis_client）。
+        - 连接失败会返回 None，并保持系统可继续工作（优雅降级）。
+    """
     global _redis_client
     if not REDIS_URL or redis is None:
         return None
@@ -101,6 +120,15 @@ def get_redis_client():
 # ==================== 数据库初始化 ====================
 
 def _ensure_index(cursor, table: str, index_name: str, columns: str) -> None:
+    """
+    确保安全库相关索引存在。
+
+    Args:
+        cursor: 安全库游标
+        table: 表名
+        index_name: 索引名
+        columns: 索引列定义字符串
+    """
     if is_security_mysql():
         cursor.execute(
             """
