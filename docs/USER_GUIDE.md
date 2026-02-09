@@ -117,12 +117,16 @@ curl -sS -X POST "http://127.0.0.1:8000/api/query/hydrate" \
    - 拒绝：`POST /api/review/reject/{group_id}`
    - 恢复：`POST /api/review/restore/{group_id}`
 
+> 若需要人工修正某条待审核记录的压力值，可调用：`PUT /api/review/pressure/{pending_id}?pressure=...`
+
 ## 5. 备份与恢复（管理员）
 
 - 查看备份状态：`GET /api/backup/status`
 - 创建备份：`POST /api/backup/create`
 - 下载备份：`GET /api/backup/download/{filename}`
 - 恢复备份：`POST /api/backup/restore/{filename}`
+
+> 浏览器直接下载时无法设置 `Authorization` 请求头，管理后台会使用 `?token=<access_token>` 方式下载备份文件。
 
 > SQLite 环境支持更完整的文件级备份/恢复；MySQL 场景通常由托管备份策略负责。
 

@@ -109,7 +109,7 @@ Authorization: Bearer <token>
 - `GET /api/review/duplicates`：扫描重复数据
 - `POST /api/review/move-duplicates`：迁移至待审核区
 - `GET /api/review/pending`：获取待审核分组（分页/筛选）
-- `PUT /api/review/pressure/{pending_id}`：修正待审核压力
+- `PUT /api/review/pressure/{pending_id}?pressure=...`：修正待审核压力（使用 query 参数传入压力值）
 - `POST /api/review/approve/{group_id}`：审核通过
 - `POST /api/review/reject/{group_id}`：拒绝整组
 - `POST /api/review/restore/{group_id}`：恢复整组到待审核
@@ -122,6 +122,11 @@ Authorization: Bearer <token>
 - `POST /api/backup/restore/{filename}`：恢复备份
 - `GET /api/backup/download/{filename}`：下载备份
 - `DELETE /api/backup/{filename}`：删除备份
+
+说明：
+
+- 备份相关接口均要求管理员权限。
+- 浏览器下载文件时无法直接携带 `Authorization` 请求头，可使用 `?token=<access_token>` 方式下载，例如：`/api/backup/download/xxx.db?token=...`。
 
 ### 4.6 Auth/TOTP/Sessions：用户、两步验证、会话（部分管理员）
 
@@ -141,6 +146,7 @@ TOTP：
 会话：
 
 - `GET /api/auth/sessions`
+- `DELETE /api/auth/sessions/{session_id}`：撤销指定会话（按会话 ID）
 - `POST /api/auth/sessions/revoke-all`
 
 ### 4.7 Security：日志与限流状态

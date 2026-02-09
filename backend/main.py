@@ -1116,7 +1116,15 @@ async def api_get_sessions(user: dict = Depends(require_auth)):
 @app.delete("/api/auth/sessions/{session_id}", tags=["Sessions"])
 async def api_revoke_session(session_id: int, user: dict = Depends(require_auth)):
     """撤销指定会话"""
-    # 这里需要根据session_id查找并撤销
+    from backend.security import revoke_session_by_id
+
+    # 普通用户只能撤销自己的会话；管理员可撤销任意会话
+    username = None if user["role"] == "admin" else user["username"]
+    ok = revoke_session_by_id(session_id, username=username)
+    if not ok:
+        raise HTTPException(status_code=404, detail="会话不存在")
+
+    record_audit_log(user["username"], "REVOKE_SESSION", "session", session_id)
     return {"success": True, "message": "会话已撤销"}
 
 
@@ -1921,12 +1929,16 @@ async def api_download_excel_template():
 @app.get("/api/backup/status", tags=["Backup"])
 async def api_backup_status(user: dict = Depends(require_auth)):
     """获取备份状态"""
+    if user["role"] != "admin":
+        raise HTTPException(status_code=403, detail="权限不足")
     return {"success": True, "data": get_backup_status()}
 
 
 @app.get("/api/backup/list", tags=["Backup"])
 async def api_backup_list(user: dict = Depends(require_auth)):
     """获取备份列表"""
+    if user["role"] != "admin":
+        raise HTTPException(status_code=403, detail="权限不足")
     return {"success": True, "data": list_backups()}
 
 
@@ -1971,8 +1983,23 @@ async def api_delete_backup(filename: str, user: dict = Depends(require_auth)):
 
 
 @app.get("/api/backup/download/{filename}", tags=["Backup"])
-async def api_download_backup(filename: str, user: dict = Depends(require_auth)):
+async def api_download_backup(
+    filename: str,
+    token: Optional[str] = None,
+    authorization: Optional[str] = Header(None),
+):
     """下载备份文件"""
+    # 兼容浏览器下载场景：window.location.href 无法携带 Authorization 头
+    # 前端可使用 /api/backup/download/{filename}?token=<access_token>
+    bearer = get_token_from_header(authorization) or token
+    if not bearer:
+        raise HTTPException(status_code=401, detail="未提供认证令牌")
+    user = get_current_user(bearer)
+    if not user:
+        raise HTTPException(status_code=401, detail="令牌无效或已过期")
+    if user["role"] != "admin":
+        raise HTTPException(status_code=403, detail="权限不足")
+
     backup_dir = get_backup_dir()
     filepath = os.path.join(backup_dir, filename)
     

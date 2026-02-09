@@ -665,6 +665,55 @@ def revoke_session(token: str) -> bool:
         return False
 
 
+def revoke_session_by_id(session_id: int, username: Optional[str] = None) -> bool:
+    """
+    按会话 ID 撤销会话（用于会话管理 API）。
+
+    Args:
+        session_id: sessions 表主键 ID
+        username: 若提供，则仅允许撤销该用户自己的会话；为 None 时不限制用户名（管理员场景）
+
+    Returns:
+        是否撤销成功（找到并删除会话则为 True）。
+    """
+    try:
+        conn = open_security_connection(dict_cursor=True)
+        cursor = conn.cursor()
+        if username:
+            cursor.execute(
+                "SELECT id, token_hash FROM sessions WHERE id = ? AND username = ?",
+                (session_id, username),
+            )
+        else:
+            cursor.execute(
+                "SELECT id, token_hash FROM sessions WHERE id = ?",
+                (session_id,),
+            )
+        row = cursor.fetchone()
+        if not row:
+            conn.close()
+            return False
+
+        token_hash = row["token_hash"]
+        cursor.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+        conn.commit()
+        conn.close()
+
+        # 清理缓存（Redis / 内存）
+        redis_client = get_redis_client()
+        if redis_client:
+            redis_client.delete(_redis_key(f"session:{token_hash}"))
+        else:
+            with _lock:
+                if token_hash in active_sessions:
+                    del active_sessions[token_hash]
+
+        return True
+    except Exception as e:
+        print(f"[Security] 按ID撤销会话失败: {e}")
+        return False
+
+
 def get_user_sessions(username: str) -> List[Dict]:
     """获取用户所有会话"""
     try:
