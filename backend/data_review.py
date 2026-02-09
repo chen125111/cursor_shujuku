@@ -8,6 +8,15 @@ from backend.db import get_connection, is_mysql
 
 
 def _ensure_index(cursor, table: str, index_name: str, columns: str) -> None:
+    """
+    确保索引存在（SQLite 使用 IF NOT EXISTS；MySQL 通过 information_schema 判断）。
+
+    Args:
+        cursor: 数据库游标
+        table: 表名
+        index_name: 索引名
+        columns: 索引列定义字符串
+    """
     if is_mysql():
         cursor.execute(
             """
@@ -27,6 +36,15 @@ def _ensure_index(cursor, table: str, index_name: str, columns: str) -> None:
 
 
 def _ensure_column(cursor, table: str, column: str, ddl: str) -> None:
+    """
+    确保表中存在指定列（用于兼容旧版本表结构）。
+
+    Args:
+        cursor: 数据库游标
+        table: 表名
+        column: 列名
+        ddl: 列定义（用于 ALTER TABLE ADD COLUMN）
+    """
     if is_mysql():
         cursor.execute(
             """
@@ -49,7 +67,12 @@ def _ensure_column(cursor, table: str, column: str, ddl: str) -> None:
 
 
 def init_review_tables():
-    """初始化审核相关的数据表"""
+    """
+    初始化审核相关的数据表（pending_review）与索引。
+
+    Notes:
+        本函数会在模块导入时执行一次（见文件末尾）。
+    """
     id_column = "BIGINT PRIMARY KEY AUTO_INCREMENT" if is_mysql() else "INTEGER PRIMARY KEY AUTOINCREMENT"
     group_id_type = "VARCHAR(32)" if is_mysql() else "TEXT"
     status_type = "VARCHAR(20)" if is_mysql() else "TEXT"
@@ -101,6 +124,9 @@ def find_duplicate_pressure_records() -> List[Dict]:
     """
     查找同组分、同温度下有多个不同压力值的记录
     返回按组分+温度分组的数据
+
+    Returns:
+        分组结果列表，每项包含 composition/temperature/count/ids/pressures。
     """
     with get_connection(dict_cursor=True) as conn:
         cursor = conn.cursor()
@@ -143,6 +169,12 @@ def find_duplicate_pressure_records() -> List[Dict]:
 def move_duplicates_to_review() -> Dict:
     """
     将所有同组分同温度的重复压力数据移到待审核表
+
+    Returns:
+        {'moved': 移动记录数, 'groups': 分组数}
+
+    Notes:
+        移动完成后会从正式表 `gas_mixture` 删除这些记录，以避免重复数据干扰查询。
     """
     duplicates = find_duplicate_pressure_records()
     
@@ -211,6 +243,12 @@ def move_duplicates_to_review() -> Dict:
 def move_high_pressure_to_review(threshold: float = 50.0) -> Dict:
     """
     将压力高于阈值的数据移到待审核表
+
+    Args:
+        threshold: 压力阈值（MPa）
+
+    Returns:
+        {'moved': 移动记录数, 'groups': 分组数, 'threshold': threshold}
     """
     with get_connection(dict_cursor=True) as conn:
         cursor = conn.cursor()
@@ -276,6 +314,15 @@ def move_high_pressure_to_review(threshold: float = 50.0) -> Dict:
 
 
 def _get_next_group_number(cursor) -> int:
+    """
+    获取下一个审核分组号（用于生成 group_id，如 G0001）。
+
+    Args:
+        cursor: 数据库游标
+
+    Returns:
+        下一个可用分组号（整数）。
+    """
     cursor.execute('SELECT group_id FROM pending_review')
     max_num = 0
     for row in cursor.fetchall():
@@ -294,7 +341,19 @@ def get_pending_groups(
     temp_min: Any = None,
     temp_max: Any = None,
 ) -> Dict:
-    """获取待审核的数据组（分页）"""
+    """
+    获取待审核的数据组（分页 + 筛选）。
+
+    Args:
+        page: 页码（从 1 开始）
+        per_page: 每页组数（最大 200）
+        group_id: 可选，按 group_id 模糊匹配
+        temp_min: 可选，温度下限（K）
+        temp_max: 可选，温度上限（K）
+
+    Returns:
+        分页结果字典（groups/total/page/per_page/total_pages）。
+    """
     with get_connection(dict_cursor=True) as conn:
         cursor = conn.cursor()
 
@@ -382,7 +441,12 @@ def get_pending_groups(
 
 
 def get_pending_stats() -> Dict:
-    """获取待审核数据统计"""
+    """
+    获取待审核数据统计信息。
+
+    Returns:
+        {'pending_groups': 待审组数, 'pending_records': 待审记录数, 'approved': 已通过, 'rejected': 已拒绝}
+    """
     with get_connection(dict_cursor=True) as conn:
         cursor = conn.cursor()
         
@@ -407,7 +471,16 @@ def get_pending_stats() -> Dict:
 
 
 def update_pending_pressure(pending_id: int, new_pressure: float) -> bool:
-    """更新待审核记录的压力值"""
+    """
+    更新待审核记录的压力值（用于人工修正）。
+
+    Args:
+        pending_id: pending_review 记录 ID
+        new_pressure: 新压力值（MPa）
+
+    Returns:
+        是否更新成功。
+    """
     with get_connection(dict_cursor=True) as conn:
         cursor = conn.cursor()
         cursor.execute('UPDATE pending_review SET pressure = ? WHERE id = ?', (new_pressure, pending_id))
@@ -419,6 +492,14 @@ def approve_group(group_id: str, selected_pressures: List[int], username: str = 
     """
     审核通过一组数据
     selected_pressures: 选择保留的压力记录ID列表
+
+    Args:
+        group_id: 分组 ID
+        selected_pressures: 选择保留的 pending_review 记录 ID 列表
+        username: 审核人（写入 reviewed_by）
+
+    Returns:
+        {'approved': 通过数量, 'group_id': group_id}
     """
     with get_connection(dict_cursor=True) as conn:
         cursor = conn.cursor()
@@ -474,7 +555,16 @@ def approve_group(group_id: str, selected_pressures: List[int], username: str = 
 
 
 def reject_group(group_id: str, username: str = None) -> bool:
-    """拒绝整组数据"""
+    """
+    拒绝整组数据（将该组所有 pending 记录标记为 rejected）。
+
+    Args:
+        group_id: 分组 ID
+        username: 审核人
+
+    Returns:
+        是否更新到至少一条记录。
+    """
     with get_connection(dict_cursor=True) as conn:
         cursor = conn.cursor()
         cursor.execute('''
@@ -487,7 +577,18 @@ def reject_group(group_id: str, username: str = None) -> bool:
 
 
 def restore_group(group_id: str) -> Dict:
-    """恢复一组数据到待审核状态"""
+    """
+    恢复一组数据到待审核状态。
+
+    Args:
+        group_id: 分组 ID
+
+    Returns:
+        {'restored': 恢复的记录数}
+
+    Notes:
+        如果该组曾审核通过并写回 `gas_mixture`，会先删除 approved_record_id 对应的正式记录。
+    """
     with get_connection(dict_cursor=True) as conn:
         cursor = conn.cursor()
         

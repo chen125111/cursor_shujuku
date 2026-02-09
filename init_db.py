@@ -1,15 +1,25 @@
 """
 数据库初始化脚本
-从原始Excel文件导入数据到SQLite数据库
+从 CSV/Excel 文件导入数据到数据库（SQLite/MySQL）。
+
+说明：
+- 默认读取根目录的 `date.csv`
+- CSV 文件可能来自不同操作系统/软件导出，编码不一定为 UTF-8。本脚本会尝试多种常见编码并给出提示。
 """
 
 import os
 import pandas as pd
+import zipfile
 
 from backend.database import init_database, batch_create_records, get_statistics
 
 def import_data_from_excel(file_path: str = "date.csv"):
-    """从Excel文件导入数据"""
+    """
+    从 CSV/Excel 文件导入数据并写入数据库。
+
+    Args:
+        file_path: 数据文件路径，支持 `.csv/.tsv/.xls/.xlsx`
+    """
     print("="*50)
     print("   气体混合物数据导入工具")
     print("="*50)
@@ -23,7 +33,47 @@ def import_data_from_excel(file_path: str = "date.csv"):
     try:
         ext = os.path.splitext(file_path)[1].lower()
         if ext in [".csv", ".tsv"]:
-            df = pd.read_csv(file_path)
+            # 兼容：部分数据文件可能被错误命名为 .csv，但实际是 xlsx（zip 容器）
+            if zipfile.is_zipfile(file_path):
+                df = pd.read_excel(file_path)
+                print("    [WARN] 文件扩展名为 CSV，但内容为 Excel（xlsx）；已改用 read_excel 读取")
+                # 继续后续导入流程
+            else:
+                # CSV/TSV：尝试多种编码，提升跨平台兼容性
+                # 对 CSV 优先使用“自动分隔符探测”（sep=None + engine=python）
+                # 对 TSV 固定为制表符
+                sep = "\t" if ext == ".tsv" else None
+                encodings = ["utf-8-sig", "utf-8", "gb18030", "gbk", "latin1"]
+                df = None
+                last_err = None
+                for enc in encodings:
+                    try:
+                        df = pd.read_csv(
+                            file_path,
+                            sep=sep,
+                            engine="python",
+                            encoding=enc,
+                        )
+                        print(f"    [OK] 检测到编码: {enc}")
+                        break
+                    except UnicodeDecodeError as e:
+                        last_err = e
+                    except Exception as e:
+                        # 其他异常（如分隔符/格式）也记录，最后统一抛出
+                        last_err = e
+                if df is None:
+                    # 最后兜底：使用替换策略读取，避免因少量坏字节完全失败
+                    try:
+                        df = pd.read_csv(
+                            file_path,
+                            sep=sep,
+                            engine="python",
+                            encoding="utf-8",
+                            encoding_errors="replace",
+                        )
+                        print("    [WARN] 使用 utf-8 + replace 兜底读取（可能存在少量乱码字符）")
+                    except Exception:
+                        raise last_err or RuntimeError("读取 CSV 失败")
         elif ext in [".xls", ".xlsx"]:
             df = pd.read_excel(file_path)
         else:
