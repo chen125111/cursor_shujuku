@@ -1631,60 +1631,39 @@
                 btn.disabled = true;
                 btn.textContent = '查询中...';
             }
+            setBatchStatus(`批量查询中（${temps.length} 条）...`);
 
-            const results = [];
-            for (let i = 0; i < temps.length; i++) {
-                const temp = temps[i];
-                if (temp < 100 || temp > 400) {
-                    results.push({
-                        temperature: temp,
-                        success: false,
-                        status: 'invalid',
-                        message: '温度超出范围(100-400K)'
-                    });
-                    setBatchStatus(`处理中 ${i + 1}/${temps.length}（含无效温度）...`);
-                    continue;
+            let results = [];
+            try {
+                const res = await fetch(`${API_BASE}/query/batch`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        components: selectedComponents,
+                        temperatures: temps
+                    })
+                });
+                const data = await res.json();
+                if (!res.ok || !data.success) {
+                    throw new Error(data.message || '批量查询失败');
                 }
-                try {
-                    const res = await fetch(`${API_BASE}/query/by-components`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            components: selectedComponents,
-                            temperature: temp
-                        })
-                    });
-                    const data = await res.json();
-                    if (data.success && data.data) {
-                        results.push({
-                            temperature: temp,
-                            success: true,
-                            status: 'success',
-                            pressure: data.data.pressure,
-                            matchedTemperature: data.data.temperature
-                        });
-                    } else {
-                        results.push({
-                            temperature: temp,
-                            success: false,
-                            status: 'no-data',
-                            message: data.message || '未找到匹配数据'
-                        });
-                    }
-                } catch (error) {
-                    results.push({
-                        temperature: temp,
-                        success: false,
-                        status: 'error',
-                        message: error.message || '查询失败'
-                    });
+                const rawResults = (data.data && Array.isArray(data.data.results)) ? data.data.results : [];
+                results = rawResults.map(item => ({
+                    temperature: item.temperature,
+                    success: Boolean(item.success),
+                    status: item.status || (item.success ? 'success' : 'no-data'),
+                    pressure: item.pressure,
+                    matchedTemperature: item.matched_temperature ?? item.matchedTemperature ?? null,
+                    message: item.message || ''
+                }));
+            } catch (error) {
+                setBatchStatus(`批量查询失败: ${error.message}`, 'error');
+                return;
+            } finally {
+                if (btn) {
+                    btn.disabled = false;
+                    btn.textContent = '🚀 批量查询';
                 }
-                setBatchStatus(`处理中 ${i + 1}/${temps.length}...`);
-            }
-
-            if (btn) {
-                btn.disabled = false;
-                btn.textContent = '🚀 批量查询';
             }
 
             const summary = computeBatchSummary(results);
@@ -1692,8 +1671,8 @@
                 components: [...selectedComponents],
                 results: results.map(item => ({
                     temperature: item.temperature,
-                    pressure: item.pressure || null,
-                    matchedTemperature: item.matchedTemperature || null,
+                    pressure: item.pressure ?? null,
+                    matchedTemperature: item.matchedTemperature ?? null,
                     success: item.success,
                     status: item.status,
                     message: item.message || ''
@@ -1783,10 +1762,14 @@
                     ? '<span class="badge badge-success">成功</span>'
                     : item.status === 'invalid'
                         ? '<span class="badge badge-error">无效</span>'
-                        : '<span class="badge badge-warn">无数据</span>';
-                const pressureText = item.success ? item.pressure.toFixed(3) : '--';
-                const matchedText = item.success ? item.matchedTemperature.toFixed(2) : '--';
-                const messageText = item.success ? '匹配成功' : (item.message || '未找到匹配数据');
+                        : item.status === 'error'
+                            ? '<span class="badge badge-error">失败</span>'
+                            : '<span class="badge badge-warn">无数据</span>';
+                const hasPressure = item.pressure !== null && item.pressure !== undefined;
+                const hasMatchedTemp = item.matchedTemperature !== null && item.matchedTemperature !== undefined;
+                const pressureText = item.success && hasPressure ? item.pressure.toFixed(3) : '--';
+                const matchedText = item.success && hasMatchedTemp ? item.matchedTemperature.toFixed(2) : '--';
+                const messageText = item.success ? '匹配成功' : (item.message || (item.status === 'error' ? '查询失败' : '未找到匹配数据'));
                 return `
                     <tr>
                         <td>${index + 1}</td>
@@ -1980,10 +1963,12 @@
                         y = 48;
                     }
                     const statusText = item.success ? 'OK' : (item.status === 'invalid' ? 'INVALID' : item.status === 'error' ? 'ERROR' : 'NO_DATA');
+                    const hasMatchedTemp = item.matchedTemperature !== null && item.matchedTemperature !== undefined;
+                    const hasPressure = item.pressure !== null && item.pressure !== undefined;
                     doc.text(String(index + 1), columns[0], y);
                     doc.text(String(item.temperature), columns[1], y);
-                    doc.text(item.matchedTemperature ? item.matchedTemperature.toFixed(2) : '--', columns[2], y);
-                    doc.text(item.pressure ? item.pressure.toFixed(3) : '--', columns[3], y);
+                    doc.text(hasMatchedTemp ? item.matchedTemperature.toFixed(2) : '--', columns[2], y);
+                    doc.text(hasPressure ? item.pressure.toFixed(3) : '--', columns[3], y);
                     doc.text(statusText, columns[4], y);
                     y += 14;
                 });
