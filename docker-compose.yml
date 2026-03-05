@@ -16,6 +16,8 @@ services:
       - "8000:8000"
     env_file:
       - .env
+    depends_on:
+      - redis
     volumes:
       # 数据持久化
       - ./data:/app/data
@@ -28,13 +30,32 @@ services:
       - DATABASE_PATH=/app/data/gas_data.db
       - SECURITY_DB_PATH=/app/data/security.db
       - BACKUP_DIR=/app/backups
+      - CACHE_ENABLED=${CACHE_ENABLED:-1}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
       - TZ=Asia/Shanghai
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/statistics"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 10s
+    networks:
+      - gas-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: gas-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
     networks:
       - gas-network
 
@@ -62,4 +83,5 @@ networks:
 volumes:
   gas-data:
   gas-backups:
+  redis-data:
 

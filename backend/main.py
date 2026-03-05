@@ -7,14 +7,16 @@ FastAPI 后端服务
 from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Header, Depends, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse, Response, JSONResponse
+from fastapi.responses import FileResponse, StreamingResponse, JSONResponse
 from typing import Optional, List
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator, model_validator
 import logging
 import os
 import io
 import csv
-import json
+import time
+import uuid
+import hashlib
 
 from backend.models import (
     GasRecordCreate, GasRecordUpdate, GasRecord,
@@ -37,12 +39,12 @@ from backend.backup import (
     get_backup_status, init_backup_system, is_backup_supported
 )
 from backend.security import (
-    init_security, check_rate_limit, detect_crawler, add_crawler_block,
+    init_security, check_rate_limit_detailed, detect_crawler, add_crawler_block,
     record_login, check_login_attempts, record_login_attempt,
     get_login_logs, create_session, revoke_session,
     get_user_sessions, revoke_all_user_sessions, validate_password,
     get_password_policy, record_audit_log, get_audit_logs,
-    get_data_history, get_rate_limit_status
+    get_data_history, get_rate_limit_status, validate_session, revoke_session_by_id
 )
 from backend.data_review import (
     find_duplicate_pressure_records, move_duplicates_to_review,
@@ -85,26 +87,84 @@ def require_auth(authorization: Optional[str] = Header(None)):
     if not user:
         raise HTTPException(status_code=401, detail="令牌无效或已过期")
 
+    session = validate_session(token)
+    if not session or session.get("username") != user.get("username"):
+        raise HTTPException(status_code=401, detail="会话已失效，请重新登录")
+
     return user
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in ("0", "false", "no", "off", "")
+
+
+def _trusted_proxy_enabled() -> bool:
+    return _env_flag("TRUST_PROXY_HEADERS", False)
+
+
+def _get_client_ip(request: Request) -> str:
+    if _trusted_proxy_enabled():
+        xff = request.headers.get("x-forwarded-for")
+        if xff:
+            parts = [p.strip() for p in xff.split(",") if p.strip()]
+            if parts:
+                return parts[0]
+        forwarded = request.headers.get("forwarded")
+        if forwarded:
+            # 最小实现：解析 for=...
+            for seg in forwarded.split(";"):
+                seg = seg.strip()
+                if seg.lower().startswith("for="):
+                    return seg.split("=", 1)[1].strip().strip('"')
+    return request.client.host if request.client else "unknown"
+
+
+def _public_api_keys() -> set[str]:
+    raw = os.getenv("PUBLIC_API_KEYS", "").strip()
+    if not raw:
+        return set()
+    return {k.strip() for k in raw.split(",") if k.strip()}
+
+
+def require_public_api_key(x_api_key: Optional[str] = Header(None)):
+    """
+    可选的公开接口 API Key 认证。
+    - 默认不强制（PUBLIC_API_KEY_REQUIRED=0）
+    - 强制时：要求请求头携带 `X-API-Key`
+    返回 key_id（哈希前缀）用于限流与日志；不返回明文 key。
+    """
+    if not _env_flag("PUBLIC_API_KEY_REQUIRED", False):
+        return None
+    keys = _public_api_keys()
+    if not keys:
+        raise HTTPException(status_code=500, detail="服务器未配置 PUBLIC_API_KEYS")
+    if not x_api_key:
+        raise HTTPException(status_code=401, detail="未提供 API Key")
+    if x_api_key not in keys:
+        raise HTTPException(status_code=401, detail="API Key 无效")
+    return hashlib.sha256(x_api_key.encode("utf-8")).hexdigest()[:12]
 
 # ==================== Pydantic 模型 ====================
 
 class LoginRequest(BaseModel):
-    username: str
-    password: str
-    totp_code: Optional[str] = None
+    username: str = Field(..., min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_.@-]+$")
+    password: str = Field(..., min_length=1, max_length=256)
+    totp_code: Optional[str] = Field(None, min_length=6, max_length=10)
 
 class ChangePasswordRequest(BaseModel):
-    old_password: str
-    new_password: str
+    old_password: str = Field(..., min_length=1, max_length=256)
+    new_password: str = Field(..., min_length=1, max_length=256)
 
 class CreateUserRequest(BaseModel):
-    username: str
-    password: str
-    role: str = "user"
+    username: str = Field(..., min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_.@-]+$")
+    password: str = Field(..., min_length=1, max_length=256)
+    role: str = Field("user")
 
 class ResetUserPasswordRequest(BaseModel):
-    new_password: str
+    new_password: str = Field(..., min_length=1, max_length=256)
 
 class BatchDeleteRequest(BaseModel):
     ids: List[int]
@@ -127,14 +187,22 @@ app = FastAPI(
 @app.exception_handler(RequestValidationError)
 async def request_validation_exception_handler(request: Request, exc: RequestValidationError):
     # 保持 FastAPI 默认返回结构，但在此处集中记录
-    logger.info("请求参数校验失败 %s %s: %s", request.method, request.url.path, exc.errors())
-    return JSONResponse(status_code=422, content={"detail": exc.errors()})
+    request_id = getattr(getattr(request, "state", None), "request_id", None)
+    logger.info(
+        "请求参数校验失败 request_id=%s %s %s: %s",
+        request_id,
+        request.method,
+        request.url.path,
+        exc.errors(),
+    )
+    return JSONResponse(status_code=422, content={"detail": exc.errors(), "request_id": request_id})
 
 
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
-    logger.exception("未处理异常 %s %s", request.method, request.url.path)
-    return JSONResponse(status_code=500, content={"detail": "服务器内部错误"})
+    request_id = getattr(getattr(request, "state", None), "request_id", None)
+    logger.exception("未处理异常 request_id=%s %s %s", request_id, request.method, request.url.path)
+    return JSONResponse(status_code=500, content={"detail": "服务器内部错误", "request_id": request_id})
 
 # 软提示（不阻止写入）
 def format_soft_warning(warnings: List[str]) -> str:
@@ -170,34 +238,46 @@ app.add_middleware(
 
 @app.middleware("http")
 async def security_middleware(request: Request, call_next):
-    """安全中间件 - API限流 + 防爬虫"""
+    """安全中间件 - RequestID + 日志 + API限流 + 防爬虫"""
+    request_id = request.headers.get("x-request-id") or uuid.uuid4().hex
+    request.state.request_id = request_id
+
     # 获取客户端信息
-    client_ip = request.client.host if request.client else "unknown"
+    client_ip = _get_client_ip(request)
     user_agent = request.headers.get("user-agent", "")
     path = request.url.path
+    method = request.method
     
     # 白名单路径（不限流）
     whitelist_paths = ["/", "/admin", "/docs", "/openapi.json", "/css/", "/js/"]
     is_whitelisted = any(path.startswith(p) for p in whitelist_paths)
     
+    start_time = time.perf_counter()
     if not is_whitelisted and path.startswith("/api/"):
-        # 检查API限流
-        allowed, error_msg = check_rate_limit(client_ip)
+        # 限流标识：优先按 API Key，其次按 IP（避免把明文 key 写入日志/缓存）
+        api_key = request.headers.get("x-api-key")
+        api_key_id = hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:12] if api_key else None
+        identifier = f"key:{api_key_id}|ip:{client_ip}" if api_key_id else f"ip:{client_ip}"
+
+        allowed, error_msg, retry_after = check_rate_limit_detailed(identifier)
         if not allowed:
-            return Response(
-                content=json.dumps({"detail": error_msg, "error_code": "RATE_LIMITED"}),
+            headers = {"X-Request-ID": request_id}
+            if retry_after > 0:
+                headers["Retry-After"] = str(retry_after)
+            return JSONResponse(
                 status_code=429,
-                media_type="application/json"
+                content={"detail": error_msg, "error_code": "RATE_LIMITED", "request_id": request_id},
+                headers=headers,
             )
         
         # 检查爬虫
         is_crawler, crawler_reason = detect_crawler(user_agent, path, client_ip)
         if is_crawler:
             add_crawler_block(client_ip, crawler_reason)
-            return Response(
-                content=json.dumps({"detail": "访问被拒绝", "error_code": "BLOCKED"}),
+            return JSONResponse(
                 status_code=403,
-                media_type="application/json"
+                content={"detail": "访问被拒绝", "error_code": "BLOCKED", "request_id": request_id},
+                headers={"X-Request-ID": request_id},
             )
     
     response = await call_next(request)
@@ -207,6 +287,18 @@ async def security_middleware(request: Request, call_next):
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["X-XSS-Protection"] = "1; mode=block"
     response.headers["Cache-Control"] = "no-store"
+    response.headers["X-Request-ID"] = request_id
+
+    duration_ms = int((time.perf_counter() - start_time) * 1000)
+    logger.info(
+        "access request_id=%s ip=%s method=%s path=%s status=%s duration_ms=%s",
+        request_id,
+        client_ip,
+        method,
+        path,
+        getattr(response, "status_code", "-"),
+        duration_ms,
+    )
     
     return response
 
@@ -514,14 +606,14 @@ async def api_clear_cache(user: dict = Depends(require_auth)):
 # 返回值：`{success, data, count}`；若未提供任何组分则返回 success=false。
 @app.get("/api/query", tags=["Query"])
 async def api_query_by_composition(
-    x_ch4: Optional[float] = Query(None, description="CH4 摩尔分数"),
-    x_c2h6: Optional[float] = Query(None, description="C2H6 摩尔分数"),
-    x_c3h8: Optional[float] = Query(None, description="C3H8 摩尔分数"),
-    x_co2: Optional[float] = Query(None, description="CO2 摩尔分数"),
-    x_n2: Optional[float] = Query(None, description="N2 摩尔分数"),
-    x_h2s: Optional[float] = Query(None, description="H2S 摩尔分数"),
-    x_ic4h10: Optional[float] = Query(None, description="i-C4H10 摩尔分数"),
-    tolerance: float = Query(0.02, description="允许的误差范围，默认2%"),
+    x_ch4: Optional[float] = Query(None, ge=0, le=1, description="CH4 摩尔分数"),
+    x_c2h6: Optional[float] = Query(None, ge=0, le=1, description="C2H6 摩尔分数"),
+    x_c3h8: Optional[float] = Query(None, ge=0, le=1, description="C3H8 摩尔分数"),
+    x_co2: Optional[float] = Query(None, ge=0, le=1, description="CO2 摩尔分数"),
+    x_n2: Optional[float] = Query(None, ge=0, le=1, description="N2 摩尔分数"),
+    x_h2s: Optional[float] = Query(None, ge=0, le=1, description="H2S 摩尔分数"),
+    x_ic4h10: Optional[float] = Query(None, ge=0, le=1, description="i-C4H10 摩尔分数"),
+    tolerance: float = Query(0.02, gt=0, le=0.2, description="允许的误差范围，默认2%"),
     strict: bool = Query(True, description="严格模式：未输入的组分要求接近0")
 ):
     """根据气体组分查询温度和压力"""
@@ -1027,7 +1119,7 @@ async def serve_js(filename: str):
 @app.post("/api/auth/login", tags=["Auth"])
 async def api_login(request: LoginRequest, req: Request):
     """用户登录（支持两步验证）"""
-    client_ip = req.client.host if req.client else "unknown"
+    client_ip = _get_client_ip(req)
     user_agent = req.headers.get("user-agent", "")
     
     # 检查登录尝试次数
@@ -1061,7 +1153,9 @@ async def api_login(request: LoginRequest, req: Request):
     token = create_access_token({"sub": user["username"], "role": user["role"]})
     
     # 创建会话
-    create_session(token, user["username"], client_ip, user_agent)
+    if not create_session(token, user["username"], client_ip, user_agent):
+        logger.error("创建会话失败 username=%s ip=%s", request.username, client_ip)
+        raise HTTPException(status_code=500, detail="创建会话失败") from None
     
     # 记录登录日志
     record_login(request.username, client_ip, user_agent, True)
@@ -1284,7 +1378,11 @@ async def api_get_sessions(user: dict = Depends(require_auth)):
 @app.delete("/api/auth/sessions/{session_id}", tags=["Sessions"])
 async def api_revoke_session(session_id: int, user: dict = Depends(require_auth)):
     """撤销指定会话"""
-    # 这里需要根据session_id查找并撤销
+    is_admin = user.get("role") == "admin"
+    ok = revoke_session_by_id(session_id, requesting_user=user["username"], is_admin=is_admin)
+    if not ok:
+        raise HTTPException(status_code=404, detail="会话不存在或无权限")
+    record_audit_log(user["username"], "REVOKE_SESSION", "session", session_id)
     return {"success": True, "message": "会话已撤销"}
 
 
@@ -1410,8 +1508,8 @@ async def api_get_audit_logs(
 @app.get("/api/security/rate-limit", tags=["Security"])
 async def api_rate_limit_status(req: Request):
     """获取当前IP的限流状态"""
-    client_ip = req.client.host if req.client else "unknown"
-    status = get_rate_limit_status(client_ip)
+    client_ip = _get_client_ip(req)
+    status = get_rate_limit_status(f"ip:{client_ip}")
     return {"success": True, "data": status}
 
 
@@ -1645,7 +1743,11 @@ async def api_get_review_stats(user: dict = Depends(require_auth)):
 # 权限：仅 admin
 # 返回值：成功返回 `{success: true}`；记录不存在返回 404。
 @app.put("/api/review/pressure/{pending_id}", tags=["Review"])
-async def api_update_pressure(pending_id: int, pressure: float, user: dict = Depends(require_auth)):
+async def api_update_pressure(
+    pending_id: int,
+    pressure: float = Query(..., ge=0, le=1000, description="新压力值（MPa）"),
+    user: dict = Depends(require_auth),
+):
     """更新待审核记录的压力值"""
     if user["role"] != "admin":
         raise HTTPException(status_code=403, detail="权限不足")
@@ -1813,14 +1915,16 @@ def _build_component_conditions(components: List[str]) -> str:
 
 def _query_by_components_with_cursor(cursor, components: List[str], temperature: float):
     where_clause = _build_component_conditions(components)
+    t_min = temperature - 5
+    t_max = temperature + 5
     query = f"""
         SELECT temperature, pressure, {', '.join(PUBLIC_COMPONENT_COLUMNS)}
         FROM gas_mixture
-        WHERE {where_clause} AND ABS(temperature - ?) <= 5
+        WHERE {where_clause} AND (temperature >= ? AND temperature <= ?)
         ORDER BY ABS(temperature - ?)
         LIMIT 1
     """
-    cursor.execute(query, [temperature, temperature])
+    cursor.execute(query, [t_min, t_max, temperature])
     return cursor.fetchone()
 
 
@@ -1842,14 +1946,15 @@ class AvailableComponentsRequest(BaseModel):
 class RangeQueryRequest(BaseModel):
     components: List[str]
     ranges: dict  # {'x_ch4': {'min': 0.9, 'max': 0.95}, ...}
-    temperature: float
+    temperature: float = Field(..., ge=100, le=400)
 
 # 端点：POST /api/components/available
 # 功能：在“已选组分必须 >0”的条件下，返回还能追加哪些组分（数据库中存在记录）以及匹配记录数。
 # 参数（Body）：`AvailableComponentsRequest`（selected：已选组分字段名列表）
 # 返回值：成功返回 `{success, available, match_count}`；失败返回 `{success:false, message}`。
 @app.post("/api/components/available", tags=["Public Query"])
-async def api_available_components(request: AvailableComponentsRequest):
+@cached(ttl=300, key_prefix="public_components_available")
+async def api_available_components(request: AvailableComponentsRequest, api_key_id: Optional[str] = Depends(require_public_api_key)):
     """
     根据已选组分，查询数据库中还有哪些可用的组分组合
     """
@@ -1900,7 +2005,8 @@ class ComponentRangesRequest(BaseModel):
 # 参数（Body）：`ComponentRangesRequest`（components：选定组分列表）
 # 返回值：成功返回 `{success, ranges, total_records, temp_range}`；失败返回 `{success:false, message}`。
 @app.post("/api/components/ranges", tags=["Public Query"])
-async def api_component_ranges(request: ComponentRangesRequest):
+@cached(ttl=300, key_prefix="public_components_ranges")
+async def api_component_ranges(request: ComponentRangesRequest, api_key_id: Optional[str] = Depends(require_public_api_key)):
     """
     根据选定的组分，返回数据库中每个组分的实际区间范围
     """
@@ -1948,19 +2054,20 @@ async def api_component_ranges(request: ComponentRangesRequest):
 
 class QueryByComponentsRequest(BaseModel):
     components: List[str]
-    temperature: float
+    temperature: float = Field(..., ge=100, le=400)
 
 
 class BatchQueryRequest(BaseModel):
     components: List[str]
-    temperatures: List[float]
+    temperatures: List[float] = Field(..., min_length=1, max_length=BATCH_QUERY_LIMIT)
 
 # 端点：POST /api/query/by-components
 # 功能：根据“组分组合 + 温度”查询最接近的相平衡压力（温度允许 ±5K）。
 # 参数（Body）：`QueryByComponentsRequest`（components：组分字段列表，temperature：温度）
 # 返回值：找到则返回 `{success:true, data:{temperature, pressure, composition}}`；否则返回 `{success:false, message}`。
 @app.post("/api/query/by-components", tags=["Public Query"])
-async def api_query_by_components(request: QueryByComponentsRequest):
+@cached(ttl=300, key_prefix="public_query_by_components")
+async def api_query_by_components(request: QueryByComponentsRequest, api_key_id: Optional[str] = Depends(require_public_api_key)):
     """
     根据组分组合和温度查询相平衡压力
     """
@@ -2000,7 +2107,8 @@ async def api_query_by_components(request: QueryByComponentsRequest):
 # 参数（Body）：`BatchQueryRequest`（components、temperatures）
 # 返回值：`{success:true, data:{results:[...]}}`；失败返回 `{success:false, message}`。
 @app.post("/api/query/batch", tags=["Public Query"])
-async def api_batch_query(request: BatchQueryRequest):
+@cached(ttl=120, key_prefix="public_query_batch")
+async def api_batch_query(request: BatchQueryRequest, api_key_id: Optional[str] = Depends(require_public_api_key)):
     """
     批量查询相平衡压力
     """
@@ -2058,7 +2166,8 @@ async def api_batch_query(request: BatchQueryRequest):
 # 参数（Body）：`RangeQueryRequest`（components、ranges、temperature）
 # 返回值：找到则返回 `{success:true, data:{temperature, pressure}}`；否则返回 `{success:false, message}`。
 @app.post("/api/query/range", tags=["Public Query"])
-async def api_range_query(request: RangeQueryRequest):
+@cached(ttl=300, key_prefix="public_query_range")
+async def api_range_query(request: RangeQueryRequest, api_key_id: Optional[str] = Depends(require_public_api_key)):
     """
     根据组分范围和温度查询相平衡压力
     """
@@ -2129,7 +2238,8 @@ class MatchCountRequest(BaseModel):
 # 参数（Body）：`MatchCountRequest`（components、ranges）
 # 返回值：`{success, count, display}`，display 为 "0" / "<10" / "10+" / "100+"。
 @app.post("/api/query/match-count", tags=["Public Query"])
-async def api_match_count(request: MatchCountRequest):
+@cached(ttl=300, key_prefix="public_query_match_count")
+async def api_match_count(request: MatchCountRequest, api_key_id: Optional[str] = Depends(require_public_api_key)):
     """
     根据组分范围查询匹配的数据条数（不考虑温度）
     返回模糊数量：100+, 10+, <10, 0
@@ -2183,16 +2293,41 @@ async def api_match_count(request: MatchCountRequest):
 
 
 class HydrateQueryRequest(BaseModel):
-    components: dict  # {'x_ch4': 0.9, 'x_c2h6': 0.1, ...}
-    temperature: float
-    tolerance: float = 0.02  # 默认2%容差
+    components: dict[str, float]  # {'x_ch4': 0.9, 'x_c2h6': 0.1, ...}
+    temperature: float = Field(..., ge=100, le=400)
+    tolerance: float = Field(0.02, gt=0, le=0.2)  # 默认2%容差
+
+    @field_validator("components")
+    @classmethod
+    def validate_components(cls, v: dict[str, float]):
+        if not isinstance(v, dict) or not v:
+            raise ValueError("components 必须为非空对象")
+        allowed = set(PUBLIC_COMPONENT_COLUMNS)
+        for k, val in v.items():
+            if k not in allowed:
+                raise ValueError(f"非法组分字段: {k}")
+            if not isinstance(val, (int, float)):
+                raise ValueError(f"组分 {k} 必须为数字")
+            if val < 0 or val > 1:
+                raise ValueError(f"组分 {k} 必须在 0~1 之间")
+        return v
+
+    @model_validator(mode="after")
+    def validate_sum(self):
+        total = sum(float(v) for v in self.components.values())
+        if total <= 0:
+            raise ValueError("至少需要输入一个大于 0 的组分")
+        if total > 1.2:
+            raise ValueError("组分和过大（请检查是否为摩尔分数）")
+        return self
 
 # 端点：POST /api/query/hydrate
 # 功能：气体水合物相平衡查询：输入组分与温度，按容差与温度范围匹配最接近实验点并返回压力与匹配度分数。
 # 参数（Body）：`HydrateQueryRequest`（components、temperature、tolerance）
 # 返回值：找到则返回 `{success:true, data:{temperature, pressure, match_score}}`；否则返回 `{success:false, message}`。
 @app.post("/api/query/hydrate", tags=["Public Query"])
-async def api_hydrate_query(request: HydrateQueryRequest):
+@cached(ttl=300, key_prefix="public_query_hydrate")
+async def api_hydrate_query(request: HydrateQueryRequest, api_key_id: Optional[str] = Depends(require_public_api_key)):
     """
     气体水合物相平衡查询接口
     - 用户输入组分摩尔分数 + 温度
@@ -2217,17 +2352,17 @@ async def api_hydrate_query(request: HydrateQueryRequest):
             for col in comp_cols:
                 user_val = components.get(col, 0)
                 if user_val > 0.001:  # 用户输入了该组分
-                    # 允许一定容差
-                    conditions.append(f"ABS({col} - ?) <= ?")
-                    params.extend([user_val, tolerance])
+                    # 用 BETWEEN 代替 ABS(...) 便于索引
+                    conditions.append(f"({col} >= ? AND {col} <= ?)")
+                    params.extend([user_val - tolerance, user_val + tolerance])
                 else:
                     # 用户没输入该组分，要求数据库中也接近0
                     conditions.append(f"{col} <= ?")
                     params.append(tolerance)
 
-            # 温度筛选 - 允许±5K范围
-            conditions.append("ABS(temperature - ?) <= 5")
-            params.append(temperature)
+            # 温度筛选 - 允许±5K范围（用 BETWEEN）
+            conditions.append("(temperature >= ? AND temperature <= ?)")
+            params.extend([temperature - 5, temperature + 5])
 
             where_clause = " AND ".join(conditions)
 
@@ -2460,6 +2595,9 @@ async def startup_event():
     """应用启动时执行"""
     logger.info("[App] 正在初始化安全模块...")
     init_security()
+    from backend.database import init_database
+    logger.info("[App] 正在初始化业务数据库...")
+    init_database()
     ensure_admin_user()
     if is_using_default_secret_key():
         logger.warning("[Security] SECRET_KEY 使用默认值，请在生产环境中设置环境变量")
@@ -2471,10 +2609,13 @@ async def startup_event():
     # 初始化缓存
     logger.info("[App] 正在初始化缓存系统...")
     cache = init_cache()
-    if cache.is_connected():
+    stats = cache.get_stats() if cache else {"redis": {"connected": False}, "memory": {"connected": False}}
+    if stats.get("redis", {}).get("connected"):
         logger.info("[Cache] Redis缓存已连接")
+    elif stats.get("memory", {}).get("connected"):
+        logger.warning("[Cache] Redis未连接，已降级为内存缓存")
     else:
-        logger.warning("[Cache] Redis未连接或已禁用，缓存功能不可用")
+        logger.warning("[Cache] 缓存已禁用或不可用")
     
     logger.info("[App] 系统启动完成 v4.0")
 
