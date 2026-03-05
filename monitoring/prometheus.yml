@@ -1,0 +1,36 @@
+# ==========================================
+# Prometheus 监控配置
+# ==========================================
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # Prometheus 自身
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # 后端应用（需后端暴露 metrics 端点时可启用）
+  - job_name: 'backend'
+    static_configs:
+      - targets: ['backend:8000']
+    metrics_path: /api/statistics
+    # 注：当前后端无 Prometheus metrics，可后续添加 /metrics 端点
+
+  # Nginx 指标（需 nginx-exporter 时启用）
+  # - job_name: 'nginx'
+  #   static_configs:
+  #     - targets: ['nginx-exporter:9113']
+
+  # Redis 指标
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis:6379']
+    # 注：需 redis_exporter 容器
+
+  # Docker 容器
+  - job_name: 'docker'
+    static_configs:
+      - targets: ['host.docker.internal:9323']
+    # 注：需启用 Docker metrics

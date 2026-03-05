@@ -1,0 +1,17 @@
+# ==========================================
+# Certbot 服务 - 用于 Let's Encrypt 证书续期
+# 与主 compose 一起使用: docker compose -f docker-compose.yml -f docker-compose.certbot.yml up -d certbot
+# ==========================================
+
+version: '3.8'
+
+services:
+  certbot:
+    image: certbot/certbot:latest
+    container_name: lab-certbot
+    volumes:
+      - ./certbot/www:/var/www/certbot
+      - ./certbot/conf:/etc/letsencrypt
+    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;'"
+    networks:
+      - lab-network
