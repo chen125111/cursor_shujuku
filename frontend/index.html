@@ -11,6 +11,17 @@
     <script src="https://cdn.jsdelivr.net/npm/jspdf@latest/dist/jspdf.umd.min.js"></script>
     
     <style>
+        :root {
+            --primary: #3b82f6;
+            --primary-dark: #2563eb;
+            --success: #10b981;
+            --danger: #ef4444;
+            --warning: #f59e0b;
+            --surface: rgba(30, 41, 59, 0.8);
+            --surface-strong: rgba(15, 23, 42, 0.8);
+            --border: rgba(71, 85, 105, 0.5);
+        }
+
         * {
             margin: 0;
             padding: 0;
@@ -22,6 +33,7 @@
             background: linear-gradient(135deg, #0c1929 0%, #1a2940 50%, #0d2137 100%);
             min-height: 100vh;
             color: #e2e8f0;
+            line-height: 1.45;
         }
 
         .container {
@@ -30,13 +42,46 @@
             padding: 40px 20px;
         }
 
+        .toast-container {
+            position: fixed;
+            top: 16px;
+            right: 16px;
+            z-index: 1200;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            width: min(360px, calc(100vw - 24px));
+            pointer-events: none;
+        }
+
+        .toast {
+            background: rgba(15, 23, 42, 0.95);
+            border: 1px solid rgba(71, 85, 105, 0.6);
+            border-left: 4px solid #60a5fa;
+            color: #dbeafe;
+            border-radius: 10px;
+            padding: 12px 14px;
+            font-size: 13px;
+            box-shadow: 0 12px 28px rgba(15, 23, 42, 0.45);
+            animation: toast-in 0.28s ease;
+        }
+
+        .toast.success { border-left-color: #34d399; color: #d1fae5; }
+        .toast.error { border-left-color: #f87171; color: #fee2e2; }
+        .toast.warning { border-left-color: #fbbf24; color: #fef3c7; }
+
+        @keyframes toast-in {
+            from { opacity: 0; transform: translateY(-8px) scale(0.98); }
+            to { opacity: 1; transform: translateY(0) scale(1); }
+        }
+
         header {
             text-align: center;
             margin-bottom: 30px;
         }
 
         h1 {
-            font-size: 28px;
+            font-size: clamp(24px, 4vw, 32px);
             background: linear-gradient(135deg, #60a5fa, #34d399);
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
@@ -55,6 +100,18 @@
             margin-bottom: 20px;
             border: 1px solid rgba(71, 85, 105, 0.5);
             backdrop-filter: blur(10px);
+            animation: fade-up 0.35s ease;
+            transition: border-color 0.2s ease, box-shadow 0.2s ease;
+        }
+
+        .card:hover {
+            border-color: rgba(96, 165, 250, 0.5);
+            box-shadow: 0 14px 30px rgba(15, 23, 42, 0.25);
+        }
+
+        @keyframes fade-up {
+            from { opacity: 0; transform: translateY(6px); }
+            to { opacity: 1; transform: translateY(0); }
         }
 
         .card-title {
@@ -320,6 +377,7 @@
 
         .result-card.show {
             display: block;
+            animation: fade-up 0.3s ease;
         }
 
         .result-success {
@@ -387,6 +445,19 @@
             margin-top: 15px;
             font-size: 13px;
             color: #93c5fd;
+            transition: all 0.2s ease;
+        }
+
+        .hint-box.hint-success {
+            border-color: rgba(16, 185, 129, 0.4);
+            background: rgba(16, 185, 129, 0.12);
+            color: #a7f3d0;
+        }
+
+        .hint-box.hint-error {
+            border-color: rgba(248, 113, 113, 0.45);
+            background: rgba(239, 68, 68, 0.14);
+            color: #fecaca;
         }
 
         /* 页脚 */
@@ -506,8 +577,145 @@
             border-top: 1px solid rgba(71, 85, 105, 0.3);
         }
 
+        .btn {
+            border: 1px solid transparent;
+            border-radius: 10px;
+            padding: 8px 14px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            color: #e2e8f0;
+            transition: all 0.2s ease;
+            background: rgba(59, 130, 246, 0.2);
+        }
+
+        .btn:hover:not(:disabled) {
+            transform: translateY(-1px);
+        }
+
+        .btn:disabled {
+            opacity: 0.55;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #3b82f6, #2563eb);
+            color: #fff;
+        }
+
+        .btn-secondary {
+            background: rgba(15, 23, 42, 0.6);
+            border-color: rgba(71, 85, 105, 0.6);
+        }
+
+        .btn-secondary:hover:not(:disabled) {
+            border-color: #60a5fa;
+        }
+
+        .btn-sm {
+            padding: 7px 12px;
+            font-size: 12px;
+        }
+
+        .chart-frame {
+            position: relative;
+            min-height: 240px;
+        }
+
+        .chart-state {
+            position: absolute;
+            inset: 0;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            background: rgba(15, 23, 42, 0.66);
+            border-radius: 10px;
+            color: #cbd5e1;
+            padding: 14px;
+            z-index: 2;
+        }
+
+        .chart-state.active {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .chart-state-spinner {
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            border: 3px solid rgba(148, 163, 184, 0.3);
+            border-top-color: #60a5fa;
+            animation: spin 0.8s linear infinite;
+        }
+
+        .table-responsive {
+            width: 100%;
+            overflow-x: auto;
+            border-radius: 12px;
+            border: 1px solid rgba(71, 85, 105, 0.3);
+            margin-top: 16px;
+        }
+
+        .input-help {
+            margin-top: 8px;
+            font-size: 12px;
+            color: #94a3b8;
+            min-height: 18px;
+            transition: color 0.2s ease;
+        }
+
+        .input-help.error {
+            color: #fca5a5;
+        }
+
+        .input-help.success {
+            color: #86efac;
+        }
+
+        .temp-input-group.has-error input {
+            border-color: #ef4444;
+            box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.25);
+        }
+
+        .is-loading {
+            position: relative;
+            color: transparent !important;
+            pointer-events: none;
+        }
+
+        .is-loading::after {
+            content: "";
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 16px;
+            height: 16px;
+            margin: -8px 0 0 -8px;
+            border-radius: 50%;
+            border: 2px solid rgba(255, 255, 255, 0.45);
+            border-top-color: #fff;
+            animation: spin 0.6s linear infinite;
+        }
+
         /* 响应式设计 */
         @media (max-width: 768px) {
+            .container {
+                padding: 20px 14px 32px;
+            }
+
+            .card {
+                padding: 16px;
+                border-radius: 12px;
+            }
+
+            .card-title {
+                margin-bottom: 14px;
+            }
+
             .stats-grid {
                 grid-template-columns: repeat(2, 1fr);
             }
@@ -518,6 +726,51 @@
 
             .chart-card.chart-wide {
                 grid-column: span 1;
+            }
+
+            .result-value {
+                font-size: 48px;
+            }
+
+            .temp-input-group {
+                flex-direction: column;
+                align-items: stretch;
+                gap: 8px;
+            }
+
+            .temp-input-group label {
+                min-width: auto;
+            }
+
+            .temp-input-group .unit {
+                align-self: flex-end;
+                margin-top: -34px;
+                margin-right: 12px;
+                pointer-events: none;
+            }
+
+            .range-item {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 8px;
+            }
+
+            .match-stats {
+                flex-wrap: wrap;
+                gap: 14px;
+            }
+
+            .batch-actions .btn-mini,
+            .result-actions .btn-mini,
+            .chart-actions .btn {
+                flex: 1 1 calc(50% - 8px);
+                text-align: center;
+                justify-content: center;
+                min-height: 40px;
+            }
+
+            .chart-frame {
+                min-height: 220px;
             }
         }
 
@@ -532,6 +785,32 @@
 
             .stat-value {
                 font-size: 20px;
+            }
+
+            .component-buttons {
+                gap: 8px;
+            }
+
+            .comp-btn {
+                flex: 1 1 calc(50% - 8px);
+                min-height: 44px;
+                padding: 10px 10px;
+            }
+
+            .batch-actions .btn-mini,
+            .result-actions .btn-mini,
+            .chart-actions .btn {
+                flex: 1 1 100%;
+            }
+
+            .result-value {
+                font-size: 42px;
+            }
+
+            .toast-container {
+                left: 12px;
+                right: 12px;
+                width: auto;
             }
         }
 
@@ -703,7 +982,7 @@
 
         .batch-table {
             width: 100%;
-            margin-top: 16px;
+            margin-top: 0;
             border-collapse: collapse;
             font-size: 13px;
         }
@@ -736,9 +1015,18 @@
                 grid-template-columns: 1fr;
             }
         }
+
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after {
+                animation: none !important;
+                transition: none !important;
+                scroll-behavior: auto !important;
+            }
+        }
     </style>
 </head>
 <body>
+    <div class="toast-container" id="toastContainer" aria-live="polite" aria-atomic="true"></div>
     <div class="container">
         <header>
             <h1>⚗️ 气体水合物相平衡查询</h1>
@@ -779,9 +1067,10 @@
             </div>
             <div class="temp-input-group">
                 <label>温度</label>
-                <input type="number" id="temperature" placeholder="例如: 275" step="0.1" min="100" max="400">
+                <input type="number" id="temperature" placeholder="例如: 275" step="0.1" min="100" max="400" inputmode="decimal" aria-describedby="temperatureHelp">
                 <span class="unit">K</span>
             </div>
+            <div class="input-help" id="temperatureHelp">支持范围 100-400 K，按 Enter 可快速查询</div>
             <button class="btn-query" id="queryBtn" onclick="doQuery()">🔍 查询相平衡压力</button>
         </div>
 
@@ -825,6 +1114,7 @@
             </div>
             <div class="batch-input">
                 <textarea id="batchTemperatures" placeholder="输入多个温度（例如: 270, 275, 280 或每行一个温度）"></textarea>
+                <div class="input-help" id="batchHelp">支持逗号、空格或换行分隔；范围 100-400 K；最多 50 条</div>
                 <div class="batch-actions">
                     <button class="btn-mini" id="batchQueryBtn" onclick="runBatchQuery()">🚀 批量查询</button>
                     <button class="btn-mini secondary" onclick="clearBatchInput()">清空</button>
@@ -897,7 +1187,7 @@
                 <button class="btn btn-secondary btn-sm" onclick="gasCharts.exportChart('scatterChart', '温度压力关系.png')">
                     📥 导出散点图
                 </button>
-                <button class="btn btn-primary btn-sm" onclick="gasCharts.updateStatsCards()">
+                <button class="btn btn-primary btn-sm" onclick="gasCharts.refreshAll()">
                     🔄 刷新数据
                 </button>
             </div>
@@ -930,6 +1220,8 @@
         };
 
         const API_BASE = '/api';
+        const QUERY_TEMP_MIN = 100;
+        const QUERY_TEMP_MAX = 400;
 
         let selectedComponents = [];
         let availableComponents = Object.keys(COMPONENTS);
@@ -945,11 +1237,236 @@
         let favorites = [];
         let lastQueryResult = null;
         let lastBatchResult = null;
+        const uiState = {
+            confirming: false,
+            querying: false,
+            batching: false
+        };
+        const buttonLoadingText = new WeakMap();
 
         document.addEventListener('DOMContentLoaded', () => {
             renderComponentButtons();
             initQueryTools();
+            setupInputInteractions();
+            updateQueryButtonState();
         });
+
+        function setupInputInteractions() {
+            const tempInput = document.getElementById('temperature');
+            if (tempInput) {
+                tempInput.addEventListener('input', () => {
+                    validateTemperatureInput(false);
+                    updateQueryButtonState();
+                });
+                tempInput.addEventListener('keydown', (event) => {
+                    if (event.key === 'Enter') {
+                        event.preventDefault();
+                        doQuery();
+                    }
+                });
+            }
+
+            const batchInput = document.getElementById('batchTemperatures');
+            if (batchInput) {
+                batchInput.addEventListener('input', () => {
+                    updateBatchInputHint();
+                });
+            }
+        }
+
+        function showToast(message, type = 'info') {
+            const container = document.getElementById('toastContainer');
+            if (!container || !message) return;
+            const toast = document.createElement('div');
+            toast.className = `toast ${type}`;
+            toast.textContent = message;
+            container.appendChild(toast);
+            window.setTimeout(() => {
+                toast.remove();
+            }, 3200);
+        }
+        window.showToast = showToast;
+
+        async function parseApiResponse(response, fallbackMessage = '请求失败') {
+            let payload = null;
+            try {
+                payload = await response.json();
+            } catch (error) {
+                payload = null;
+            }
+            if (!response.ok) {
+                const detail = payload && (payload.message || payload.detail);
+                throw new Error(detail || `${fallbackMessage}（HTTP ${response.status}）`);
+            }
+            return payload || {};
+        }
+
+        function setButtonLoading(button, isLoading, loadingText = '处理中...') {
+            if (!button) return;
+            if (isLoading) {
+                if (!buttonLoadingText.has(button)) {
+                    buttonLoadingText.set(button, button.textContent.trim());
+                }
+                button.disabled = true;
+                button.classList.add('is-loading');
+                button.textContent = loadingText;
+                return;
+            }
+
+            const oldText = buttonLoadingText.get(button);
+            if (oldText) {
+                button.textContent = oldText;
+            }
+            button.classList.remove('is-loading');
+            button.disabled = false;
+            buttonLoadingText.delete(button);
+        }
+
+        function setSelectionHint(text, type = 'info') {
+            const hint = document.getElementById('selectionHint');
+            if (!hint) return;
+            hint.textContent = text;
+            hint.classList.remove('hint-success', 'hint-error');
+            if (type === 'success') hint.classList.add('hint-success');
+            if (type === 'error') hint.classList.add('hint-error');
+        }
+
+        function setResultCardVisible() {
+            const card = document.getElementById('resultCard');
+            if (!card) return;
+            card.classList.add('show');
+            card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+
+        function showResultLoading(message = '正在查询，请稍候...') {
+            const content = document.getElementById('resultContent');
+            if (!content) return;
+            content.innerHTML = `
+                <div class="result-error">
+                    <div class="icon">⏳</div>
+                    <div style="font-size: 18px; margin-bottom: 10px;">${escapeHtml(message)}</div>
+                    <div style="color: #94a3b8; font-size: 14px;">正在从数据库中检索最接近的平衡数据</div>
+                </div>
+            `;
+            setResultCardVisible();
+        }
+
+        function validateTemperatureInput(showHint = true) {
+            const input = document.getElementById('temperature');
+            const help = document.getElementById('temperatureHelp');
+            const group = document.querySelector('.temp-input-group');
+            if (!input || !help || !group) {
+                return { valid: false, value: null };
+            }
+
+            const raw = input.value.trim();
+            if (!raw) {
+                group.classList.remove('has-error');
+                help.classList.remove('error', 'success');
+                help.textContent = '支持范围 100-400 K，按 Enter 可快速查询';
+                return { valid: false, value: null };
+            }
+
+            const value = Number(raw);
+            if (!Number.isFinite(value)) {
+                if (showHint) showToast('请输入数字温度值', 'error');
+                group.classList.add('has-error');
+                help.classList.add('error');
+                help.classList.remove('success');
+                help.textContent = '温度格式无效，请输入数字';
+                return { valid: false, value: null };
+            }
+            if (value < QUERY_TEMP_MIN || value > QUERY_TEMP_MAX) {
+                if (showHint) showToast(`温度范围应在 ${QUERY_TEMP_MIN}-${QUERY_TEMP_MAX} K`, 'warning');
+                group.classList.add('has-error');
+                help.classList.add('error');
+                help.classList.remove('success');
+                help.textContent = `温度超出范围：${QUERY_TEMP_MIN}-${QUERY_TEMP_MAX} K`;
+                return { valid: false, value: null };
+            }
+
+            group.classList.remove('has-error');
+            help.classList.remove('error');
+            help.classList.add('success');
+            help.textContent = `温度有效：${value.toFixed(1)} K`;
+            return { valid: true, value };
+        }
+
+        function updateQueryButtonState() {
+            const queryBtn = document.getElementById('queryBtn');
+            if (!queryBtn) return;
+            const queryCard = document.getElementById('queryCard');
+            const isVisible = queryCard && queryCard.style.display !== 'none';
+            const isValidTemp = validateTemperatureInput(false).valid;
+            queryBtn.disabled = !isVisible || !selectedComponents.length || !isValidTemp || uiState.querying;
+        }
+
+        function parseBatchInput(raw) {
+            const tokens = String(raw || '')
+                .split(/[\s,;]+/)
+                .map(item => item.trim())
+                .filter(Boolean);
+            const validTemps = [];
+            const invalidTokens = [];
+            const outOfRange = [];
+            const seen = new Set();
+            let duplicateCount = 0;
+
+            for (const token of tokens) {
+                const value = Number(token);
+                if (!Number.isFinite(value)) {
+                    invalidTokens.push(token);
+                    continue;
+                }
+                if (value < QUERY_TEMP_MIN || value > QUERY_TEMP_MAX) {
+                    outOfRange.push(value);
+                    continue;
+                }
+                const key = value.toString();
+                if (seen.has(key)) {
+                    duplicateCount += 1;
+                    continue;
+                }
+                seen.add(key);
+                validTemps.push(value);
+            }
+
+            return {
+                tokens,
+                validTemps,
+                invalidTokens,
+                outOfRange,
+                duplicateCount
+            };
+        }
+
+        function updateBatchInputHint() {
+            const batchHelp = document.getElementById('batchHelp');
+            const textarea = document.getElementById('batchTemperatures');
+            if (!batchHelp || !textarea) return;
+            const parsed = parseBatchInput(textarea.value);
+
+            if (parsed.tokens.length === 0) {
+                batchHelp.textContent = '支持逗号、空格或换行分隔；范围 100-400 K；最多 50 条';
+                batchHelp.classList.remove('error', 'success');
+                return;
+            }
+
+            if (parsed.invalidTokens.length > 0 || parsed.outOfRange.length > 0) {
+                const extra = [];
+                if (parsed.invalidTokens.length > 0) extra.push(`无效项 ${parsed.invalidTokens.length} 个`);
+                if (parsed.outOfRange.length > 0) extra.push(`超范围 ${parsed.outOfRange.length} 个`);
+                batchHelp.textContent = `可用 ${parsed.validTemps.length} 条（${extra.join('，')}）`;
+                batchHelp.classList.add('error');
+                batchHelp.classList.remove('success');
+                return;
+            }
+
+            const duplicateMsg = parsed.duplicateCount > 0 ? `，已去重 ${parsed.duplicateCount} 条` : '';
+            batchHelp.textContent = `输入有效：${parsed.validTemps.length} 条${duplicateMsg}`;
+            batchHelp.classList.remove('error');
+            batchHelp.classList.add('success');
+        }
 
         function renderComponentButtons() {
             const container = document.getElementById('componentButtons');
@@ -999,7 +1516,7 @@
 
         function updateConfirmButton() {
             const btn = document.getElementById('confirmBtn');
-            btn.disabled = selectedComponents.length === 0;
+            btn.disabled = selectedComponents.length === 0 || uiState.confirming;
         }
 
         async function toggleComponent(key) {
@@ -1012,20 +1529,24 @@
             selectedComponents.push(key);
             await updateAvailableComponents();
             renderComponentButtons();
+            setSelectionHint('已更新组分组合，请点击“确认组分组合”查看区间');
             
             // 隐藏区间显示（需要重新确认）
             document.getElementById('rangeCard').style.display = 'none';
             document.getElementById('queryCard').style.display = 'none';
+            updateQueryButtonState();
         }
 
         async function removeComponent(key) {
             selectedComponents = selectedComponents.filter(k => k !== key);
             await updateAvailableComponents();
             renderComponentButtons();
+            setSelectionHint('已更新组分组合，请点击“确认组分组合”查看区间');
             
             // 隐藏区间显示
             document.getElementById('rangeCard').style.display = 'none';
             document.getElementById('queryCard').style.display = 'none';
+            updateQueryButtonState();
         }
 
         async function updateAvailableComponents() {
@@ -1040,17 +1561,25 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ selected: selectedComponents })
                 });
-                const data = await res.json();
+                const data = await parseApiResponse(res, '可选组分查询失败');
                 if (data.success) {
                     availableComponents = data.available;
+                    return;
                 }
+                throw new Error(data.message || '可选组分查询失败');
             } catch (e) {
-                console.error(e);
+                availableComponents = Object.keys(COMPONENTS);
+                showToast(`可选组分更新失败：${e.message}`, 'error');
             }
         }
 
         async function confirmComponents() {
-            if (selectedComponents.length === 0) return;
+            if (selectedComponents.length === 0 || uiState.confirming) return;
+            const confirmBtn = document.getElementById('confirmBtn');
+            uiState.confirming = true;
+            updateConfirmButton();
+            setButtonLoading(confirmBtn, true, '加载中...');
+            setSelectionHint('正在查询组分区间...');
 
             try {
                 // 调用API获取组分区间
@@ -1059,19 +1588,37 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ components: selectedComponents })
                 });
-                const data = await res.json();
+                const data = await parseApiResponse(res, '组分区间查询失败');
                 
                 if (data.success) {
                     componentRanges = data.ranges;
                     displayRanges(data);
                     document.getElementById('rangeCard').style.display = 'block';
                     document.getElementById('queryCard').style.display = data.total_records > 0 ? 'block' : 'none';
+                    const tempHelp = document.getElementById('temperatureHelp');
+                    if (tempHelp && data.temp_range) {
+                        tempHelp.textContent = `建议温度范围：${data.temp_range.min.toFixed(1)}-${data.temp_range.max.toFixed(1)} K（仍可在 100-400 K 查询）`;
+                        tempHelp.classList.remove('error');
+                    }
+                    if (data.total_records > 0) {
+                        setSelectionHint(`匹配到 ${data.total_records} 条记录，可输入温度开始查询`, 'success');
+                        showToast(`组分确认成功：${data.total_records} 条匹配记录`, 'success');
+                    } else {
+                        setSelectionHint('当前组分组合暂无可查数据，请调整组分后重试', 'error');
+                        showToast('当前组分组合暂无匹配数据', 'warning');
+                    }
+                    updateQueryButtonState();
+                    document.getElementById('rangeCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
                 } else {
-                    alert('查询失败：' + data.message);
+                    throw new Error(data.message || '查询失败');
                 }
             } catch (e) {
-                console.error(e);
-                alert('网络错误，请稍后重试');
+                showToast(`组分确认失败：${e.message}`, 'error');
+                setSelectionHint(`组分确认失败：${e.message}`, 'error');
+            } finally {
+                uiState.confirming = false;
+                setButtonLoading(confirmBtn, false);
+                updateConfirmButton();
             }
         }
 
@@ -1124,12 +1671,23 @@
         }
 
         async function doQuery() {
-            const temperature = parseFloat(document.getElementById('temperature').value);
-
-            if (!temperature || temperature < 100 || temperature > 400) {
-                showError('请输入有效的温度（100-400 K）');
+            if (uiState.querying) return;
+            if (selectedComponents.length === 0) {
+                showToast('请先确认组分组合', 'warning');
                 return;
             }
+
+            const validation = validateTemperatureInput(true);
+            if (!validation.valid) {
+                showError('请输入有效的温度（100-400 K）');
+                updateQueryButtonState();
+                return;
+            }
+            const temperature = validation.value;
+            const queryBtn = document.getElementById('queryBtn');
+            uiState.querying = true;
+            setButtonLoading(queryBtn, true, '查询中...');
+            showResultLoading(`正在查询 ${temperature.toFixed(1)} K 对应压力`);
 
             try {
                 const res = await fetch(`${API_BASE}/query/by-components`, {
@@ -1141,7 +1699,7 @@
                     })
                 });
 
-                const data = await res.json();
+                const data = await parseApiResponse(res, '单次查询失败');
                 
                 if (data.success && data.data) {
                     lastQueryResult = {
@@ -1151,6 +1709,7 @@
                         createdAt: new Date().toISOString()
                     };
                     showResult(data.data, temperature);
+                    showToast('查询成功，已定位最接近平衡点', 'success');
                     addHistoryEntry({
                         id: generateId('single'),
                         type: 'single',
@@ -1162,6 +1721,7 @@
                     });
                 } else {
                     showNoData(data.message);
+                    showToast(data.message || '未找到匹配数据', 'warning');
                     lastQueryResult = null;
                     addHistoryEntry({
                         id: generateId('single'),
@@ -1174,7 +1734,8 @@
                     });
                 }
             } catch (error) {
-                showError('查询失败，请稍后重试');
+                showError(`查询失败：${error.message}`);
+                showToast(`查询失败：${error.message}`, 'error');
                 lastQueryResult = null;
                 addHistoryEntry({
                     id: generateId('single'),
@@ -1185,6 +1746,10 @@
                     message: error.message || '查询失败',
                     createdAt: new Date().toISOString()
                 });
+            } finally {
+                uiState.querying = false;
+                setButtonLoading(queryBtn, false);
+                updateQueryButtonState();
             }
         }
 
@@ -1220,7 +1785,7 @@
                 </div>
             `;
             
-            document.getElementById('resultCard').classList.add('show');
+            setResultCardVisible();
         }
 
         function formatComposition(comp) {
@@ -1242,7 +1807,7 @@
                     <div style="color: #94a3b8; font-size: 14px;">${message || '请尝试调整温度'}</div>
                 </div>
             `;
-            document.getElementById('resultCard').classList.add('show');
+            setResultCardVisible();
         }
 
         function showError(msg) {
@@ -1252,7 +1817,7 @@
                     <div style="font-size: 18px;">${msg}</div>
                 </div>
             `;
-            document.getElementById('resultCard').classList.add('show');
+            setResultCardVisible();
         }
 
         // ==================== 查询历史与收藏 ====================
@@ -1547,6 +2112,8 @@
             await applyComponentsForQuery(entry.components);
             const tempInput = document.getElementById('temperature');
             if (tempInput) tempInput.value = entry.temperature;
+            validateTemperatureInput(false);
+            updateQueryButtonState();
             await doQuery();
         }
 
@@ -1556,7 +2123,10 @@
             await applyComponentsForQuery(entry.components);
             const tempInput = document.getElementById('temperature');
             if (tempInput) tempInput.value = entry.temperature;
+            validateTemperatureInput(false);
+            updateQueryButtonState();
             setHistoryHint('已填入收藏条件，可直接点击查询', 'success');
+            showToast('已填入收藏条件', 'success');
         }
 
         async function applyBatchFromHistory(entryId) {
@@ -1567,24 +2137,14 @@
             if (textarea) {
                 textarea.value = (entry.batch && entry.batch.temperatures || []).join('\n');
             }
+            updateBatchInputHint();
             document.getElementById('batchCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
             setBatchStatus('已填入批量温度，可直接点击批量查询', 'success');
         }
 
         // ==================== 批量查询与对比 ====================
         function parseBatchTemperatures(raw) {
-            const parts = raw.split(/[\s,;]+/).map(item => item.trim()).filter(Boolean);
-            const values = [];
-            const seen = new Set();
-            for (const item of parts) {
-                const value = parseFloat(item);
-                if (!Number.isFinite(value)) continue;
-                const key = value.toString();
-                if (seen.has(key)) continue;
-                seen.add(key);
-                values.push(value);
-            }
-            return values;
+            return parseBatchInput(raw).validTemps;
         }
 
         function clearBatchInput() {
@@ -1594,6 +2154,7 @@
             document.getElementById('batchSummary').style.display = 'none';
             setBatchStatus('已清空批量输入', 'success');
             lastBatchResult = null;
+            updateBatchInputHint();
         }
 
         function setBatchStatus(message, type = 'info') {
@@ -1610,27 +2171,35 @@
         }
 
         async function runBatchQuery() {
+            if (uiState.batching) return;
             if (selectedComponents.length === 0) {
                 setBatchStatus('请先选择并确认组分组合', 'error');
+                showToast('请先确认组分组合后再执行批量查询', 'warning');
                 return;
             }
 
             const textarea = document.getElementById('batchTemperatures');
-            const temps = parseBatchTemperatures(textarea ? textarea.value : '');
+            const parseResult = parseBatchInput(textarea ? textarea.value : '');
+            const temps = parseResult.validTemps;
             if (temps.length === 0) {
                 setBatchStatus('请输入至少一个有效温度', 'error');
+                showToast('请输入至少一个有效温度（100-400 K）', 'warning');
                 return;
             }
             if (temps.length > BATCH_LIMIT) {
                 setBatchStatus(`批量查询最多支持 ${BATCH_LIMIT} 条温度`, 'error');
+                showToast(`批量查询最多支持 ${BATCH_LIMIT} 条`, 'error');
+                return;
+            }
+            if (parseResult.invalidTokens.length > 0 || parseResult.outOfRange.length > 0) {
+                setBatchStatus('批量输入中存在无效或超范围温度，请先修正', 'error');
+                showToast('批量输入含异常值，已阻止提交', 'error');
                 return;
             }
 
             const btn = document.getElementById('batchQueryBtn');
-            if (btn) {
-                btn.disabled = true;
-                btn.textContent = '查询中...';
-            }
+            uiState.batching = true;
+            setButtonLoading(btn, true, '查询中...');
             setBatchStatus(`批量查询中（${temps.length} 条）...`);
 
             let results = [];
@@ -1643,8 +2212,8 @@
                         temperatures: temps
                     })
                 });
-                const data = await res.json();
-                if (!res.ok || !data.success) {
+                const data = await parseApiResponse(res, '批量查询失败');
+                if (!data.success) {
                     throw new Error(data.message || '批量查询失败');
                 }
                 const rawResults = (data.data && Array.isArray(data.data.results)) ? data.data.results : [];
@@ -1658,12 +2227,11 @@
                 }));
             } catch (error) {
                 setBatchStatus(`批量查询失败: ${error.message}`, 'error');
+                showToast(`批量查询失败：${error.message}`, 'error');
                 return;
             } finally {
-                if (btn) {
-                    btn.disabled = false;
-                    btn.textContent = '🚀 批量查询';
-                }
+                uiState.batching = false;
+                setButtonLoading(btn, false);
             }
 
             const summary = computeBatchSummary(results);
@@ -1683,6 +2251,7 @@
 
             renderBatchResults(results, summary);
             setBatchStatus(`批量查询完成：成功 ${summary.successCount}/${summary.total} 条`, 'success');
+            showToast(`批量查询完成：成功 ${summary.successCount}/${summary.total} 条`, 'success');
 
             addHistoryEntry({
                 id: generateId('batch'),
@@ -1786,22 +2355,24 @@
             }).join('');
 
             resultsEl.innerHTML = `
-                <table class="batch-table">
-                    <thead>
-                        <tr>
-                            <th>#</th>
-                            <th>查询温度(K)</th>
-                            <th>匹配温度(K)</th>
-                            <th>压力(MPa)</th>
-                            <th>状态</th>
-                            <th>说明</th>
-                            <th>操作</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        ${rows}
-                    </tbody>
-                </table>
+                <div class="table-responsive">
+                    <table class="batch-table">
+                        <thead>
+                            <tr>
+                                <th>#</th>
+                                <th>查询温度(K)</th>
+                                <th>匹配温度(K)</th>
+                                <th>压力(MPa)</th>
+                                <th>状态</th>
+                                <th>说明</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${rows}
+                        </tbody>
+                    </table>
+                </div>
             `;
         }
 
@@ -1811,6 +2382,8 @@
             }
             const tempInput = document.getElementById('temperature');
             if (tempInput) tempInput.value = temperature;
+            validateTemperatureInput(false);
+            updateQueryButtonState();
             await doQuery();
         }
 
