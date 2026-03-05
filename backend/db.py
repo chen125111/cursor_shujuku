@@ -177,9 +177,22 @@ def _connect_mysql(url: str, dict_cursor: bool) -> _ConnectionProxy:
 
 
 def _connect_sqlite(path: str, dict_cursor: bool) -> _ConnectionProxy:
-    conn = sqlite3.connect(path)
+    timeout = float(os.getenv("SQLITE_TIMEOUT", "5"))
+    conn = sqlite3.connect(path, timeout=timeout, check_same_thread=False)
     if dict_cursor:
         conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("PRAGMA busy_timeout = 5000")
+        conn.execute("PRAGMA temp_store = MEMORY")
+        # 负数表示 KiB，-20000 ~= 20MB page cache（按 SQLite 约定）
+        conn.execute("PRAGMA cache_size = -20000")
+        # WAL 能显著改善并发读写；失败时保持默认模式
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA synchronous = NORMAL")
+    except Exception:
+        # 某些环境（只读文件系统/受限权限）可能无法设置部分 pragma
+        pass
     return _ConnectionProxy(conn, "sqlite")
 
 

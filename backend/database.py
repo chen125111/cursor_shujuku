@@ -417,6 +417,6 @@ def batch_update_records(ids: List[int], updates: Dict[str, Any]) -> int:
         return cursor.rowcount
 
 
-# 初始化数据库
-init_database()
+# 注意：不要在 import 时初始化数据库。
+# 由应用启动事件或测试 fixture 显式调用 init_database()，避免副作用影响可测试性与启动顺序。
 

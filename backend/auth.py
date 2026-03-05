@@ -9,6 +9,7 @@ import hmac
 import json
 import os
 import time
+import uuid
 from typing import Optional, Dict
 
 from backend.db import open_security_connection
@@ -19,6 +20,8 @@ DEFAULT_SECRET_KEY = "your-super-secret-key-change-in-production-2024"
 SECRET_KEY = os.getenv("SECRET_KEY", DEFAULT_SECRET_KEY)
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24小时
+JWT_ISSUER = os.getenv("JWT_ISSUER", "").strip() or None
+JWT_AUDIENCE = os.getenv("JWT_AUDIENCE", "").strip() or None
 
 # 默认管理员账户（生产环境应存储在数据库中）
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
@@ -185,8 +188,13 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     
     to_encode.update({
         "exp": int(expire.timestamp()),
-        "iat": int(datetime.utcnow().timestamp())
+        "iat": int(datetime.utcnow().timestamp()),
+        "jti": uuid.uuid4().hex,
     })
+    if JWT_ISSUER:
+        to_encode["iss"] = JWT_ISSUER
+    if JWT_AUDIENCE:
+        to_encode["aud"] = JWT_AUDIENCE
     
     # 创建 JWT Header
     header = {"alg": ALGORITHM, "typ": "JWT"}
@@ -238,6 +246,18 @@ def verify_token(token: str) -> Optional[Dict]:
         # 检查过期时间
         if payload.get("exp", 0) < time.time():
             return None
+
+        # 可选校验 iss / aud（仅当配置了期望值时强制）
+        if JWT_ISSUER and payload.get("iss") != JWT_ISSUER:
+            return None
+        if JWT_AUDIENCE:
+            aud = payload.get("aud")
+            if isinstance(aud, list):
+                if JWT_AUDIENCE not in aud:
+                    return None
+            else:
+                if aud != JWT_AUDIENCE:
+                    return None
         
         return payload
         
