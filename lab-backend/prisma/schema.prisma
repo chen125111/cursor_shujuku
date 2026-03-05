@@ -1,0 +1,128 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  USER
+}
+
+enum ReservationStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  name         String?
+  role         Role     @default(USER)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  reservations Reservation[]
+  files        FileAsset[]
+  inventoryOps InventoryOp[]
+  refreshTokens RefreshToken[]
+}
+
+model Device {
+  id          String   @id @default(cuid())
+  code        String   @unique
+  name        String
+  model       String?
+  location    String?
+  status      String   @default("AVAILABLE") // AVAILABLE | MAINTENANCE | DISABLED
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  reservations Reservation[]
+
+  @@index([status])
+}
+
+model Reservation {
+  id        String            @id @default(cuid())
+  deviceId  String
+  userId    String
+  startTime DateTime
+  endTime   DateTime
+  purpose   String?
+  status    ReservationStatus @default(PENDING)
+  createdAt DateTime          @default(now())
+  updatedAt DateTime          @updatedAt
+
+  device Device @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([deviceId, startTime, endTime])
+  @@index([userId, startTime, endTime])
+}
+
+model InventoryItem {
+  id          String   @id @default(cuid())
+  sku         String   @unique
+  name        String
+  unit        String   @default("pcs")
+  quantity    Int      @default(0)
+  lowStock    Int      @default(0)
+  location    String?
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  ops InventoryOp[]
+
+  @@index([quantity])
+}
+
+model InventoryOp {
+  id        String   @id @default(cuid())
+  itemId    String
+  userId    String
+  delta     Int
+  reason    String?
+  createdAt DateTime @default(now())
+
+  item InventoryItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  user User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([itemId, createdAt])
+}
+
+model FileAsset {
+  id        String   @id @default(cuid())
+  ownerId   String
+  original  String
+  mimeType  String
+  size      Int
+  path      String
+  createdAt DateTime @default(now())
+
+  owner User @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  @@index([ownerId, createdAt])
+}
+
+model RefreshToken {
+  id        String   @id @default(cuid())
+  userId    String
+  tokenHash String   @unique
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+  revokedAt DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+}
+

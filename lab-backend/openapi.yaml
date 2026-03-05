@@ -1,0 +1,318 @@
+openapi: 3.0.3
+info:
+  title: 实验室管理系统后端 API
+  version: 0.1.0
+servers:
+  - url: http://localhost:4000
+tags:
+  - name: Auth
+  - name: Devices
+  - name: Reservations
+  - name: Inventory
+  - name: Files
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    Error:
+      type: object
+      properties:
+        requestId: { type: string }
+        error: { type: string }
+        message: { type: string }
+paths:
+  /api/health:
+    get:
+      summary: 健康检查
+      responses:
+        "200":
+          description: OK
+  /api/auth/register:
+    post:
+      tags: [Auth]
+      summary: 注册
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, minLength: 8 }
+                name: { type: string }
+      responses:
+        "201": { description: Created }
+  /api/auth/login:
+    post:
+      tags: [Auth]
+      summary: 登录
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string }
+      responses:
+        "200": { description: OK }
+  /api/auth/refresh:
+    post:
+      tags: [Auth]
+      summary: 刷新令牌
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken: { type: string }
+      responses:
+        "200": { description: OK }
+  /api/auth/logout:
+    post:
+      tags: [Auth]
+      summary: 退出登录（撤销 refresh token）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken: { type: string }
+      responses:
+        "200": { description: OK }
+  /api/auth/me:
+    get:
+      tags: [Auth]
+      summary: 当前用户
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: OK }
+  /api/devices:
+    get:
+      tags: [Devices]
+      summary: 设备列表
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: OK }
+    post:
+      tags: [Devices]
+      summary: 新增设备（管理员）
+      security: [{ bearerAuth: [] }]
+      responses:
+        "201": { description: Created }
+  /api/devices/{id}:
+    get:
+      tags: [Devices]
+      summary: 设备详情
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: OK }
+    patch:
+      tags: [Devices]
+      summary: 更新设备（管理员）
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: OK }
+    delete:
+      tags: [Devices]
+      summary: 删除设备（管理员）
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: OK }
+  /api/reservations:
+    get:
+      tags: [Reservations]
+      summary: 预约列表
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: OK }
+    post:
+      tags: [Reservations]
+      summary: 创建预约
+      security: [{ bearerAuth: [] }]
+      responses:
+        "201": { description: Created }
+  /api/reservations/{id}:
+    get:
+      tags: [Reservations]
+      summary: 预约详情
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: OK }
+  /api/reservations/{id}/cancel:
+    post:
+      tags: [Reservations]
+      summary: 取消预约
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: OK }
+  /api/reservations/{id}/approve:
+    post:
+      tags: [Reservations]
+      summary: 审批通过（管理员）
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: OK }
+  /api/reservations/{id}/reject:
+    post:
+      tags: [Reservations]
+      summary: 审批拒绝（管理员）
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string }
+      responses:
+        "200": { description: OK }
+  /api/inventory/items:
+    get:
+      tags: [Inventory]
+      summary: 库存列表
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: OK }
+    post:
+      tags: [Inventory]
+      summary: 新增库存物料（管理员）
+      security: [{ bearerAuth: [] }]
+      responses:
+        "201": { description: Created }
+  /api/inventory/items/{id}:
+    get:
+      tags: [Inventory]
+      summary: 库存物料详情
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: OK }
+    patch:
+      tags: [Inventory]
+      summary: 更新库存物料（管理员）
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: OK }
+  /api/inventory/items/{id}/adjust:
+    post:
+      tags: [Inventory]
+      summary: 调整库存（入库/出库）
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [delta]
+              properties:
+                delta: { type: integer }
+                reason: { type: string }
+      responses:
+        "200": { description: OK }
+  /api/inventory/items/{id}/ops:
+    get:
+      tags: [Inventory]
+      summary: 库存流水
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: OK }
+  /api/files:
+    post:
+      tags: [Files]
+      summary: 上传文件
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        "201": { description: Created }
+  /api/files/{id}:
+    get:
+      tags: [Files]
+      summary: 下载文件
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: OK }
+
