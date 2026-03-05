@@ -72,3 +72,10 @@ htmlcov/
 # Temporary files
 temp/
 tmp/
+
+# Node.js
+node_modules/
+.npm/
+.pnpm-store/
+.yarn/
+.vite/
