@@ -25,16 +25,48 @@ services:
       # - ./frontend:/app/frontend
     environment:
       - SECRET_KEY=${SECRET_KEY:-your-production-secret-key-change-me}
+      # 公共查询接口（可选）：设置后将要求请求携带 X-API-Key
+      - PUBLIC_API_KEY=${PUBLIC_API_KEY:-}
       - DATABASE_PATH=/app/data/gas_data.db
       - SECURITY_DB_PATH=/app/data/security.db
       - BACKUP_DIR=/app/backups
+      # 缓存：Redis 优先 + 内存回退
+      - CACHE_ENABLED=${CACHE_ENABLED:-1}
+      - MEMORY_CACHE_ENABLED=${MEMORY_CACHE_ENABLED:-1}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      - HYDRATE_CACHE_TTL=${HYDRATE_CACHE_TTL:-60}
       - TZ=Asia/Shanghai
+    depends_on:
+      redis:
+        condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/statistics"]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 10s
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      - gas-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: gas-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - ./redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
     networks:
       - gas-network
 

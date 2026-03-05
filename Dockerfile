@@ -10,12 +10,16 @@ WORKDIR /app
 # 设置环境变量
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
     TZ=Asia/Shanghai
 
 # 安装系统依赖
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
+    curl \
     && rm -rf /var/lib/apt/lists/*
+
+# 创建非 root 用户
+RUN addgroup --system --gid 10001 app && adduser --system --uid 10001 --ingroup app appuser
 
 # 复制依赖文件
 COPY backend/requirements.txt .
@@ -28,7 +32,7 @@ COPY backend/ ./backend/
 COPY frontend/ ./frontend/
 
 # 创建数据和备份目录
-RUN mkdir -p /app/data /app/backups
+RUN mkdir -p /app/data /app/backups && chown -R appuser:app /app
 
 # 设置数据卷
 VOLUME ["/app/data", "/app/backups"]
@@ -38,8 +42,9 @@ EXPOSE 8000
 
 # 健康检查
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8000/api/statistics || exit 1
+    CMD curl -f http://localhost:8000/api/health || exit 1
 
 # 启动命令
+USER appuser
 CMD ["python", "-m", "uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
 
