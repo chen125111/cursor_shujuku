@@ -2,6 +2,7 @@
 安全模块 - API限流、防爬虫、登录日志、会话管理、密码策略
 """
 
+import logging
 import time
 import hashlib
 import re
@@ -18,6 +19,9 @@ except ImportError:  # pragma: no cover
     redis = None
 
 from backend.db import get_security_connection, is_security_mysql, open_security_connection
+
+# 日志
+logger = logging.getLogger(__name__)
 
 # ==================== 配置 ====================
 
@@ -216,17 +220,18 @@ def init_security_db():
         _ensure_index(cursor, "user_accounts", "idx_user_accounts_username", "username")
 
         conn.commit()
-    print("[Security] 安全数据库初始化完成")
+    logger.info("[Security] 安全数据库初始化完成")
 
 
 # ==================== API 限流 ====================
 
-def check_rate_limit(ip: str) -> Tuple[bool, str]:
+def check_rate_limit(ip: str, cost: int = 1) -> Tuple[bool, str]:
     """
     检查API限流
     返回: (是否允许, 错误信息)
     """
     current_time = time.time()
+    cost = max(1, int(cost))
     redis_client = get_redis_client()
     if redis_client:
         blocked_key = _redis_key(f"blocked:{ip}")
@@ -236,8 +241,8 @@ def check_rate_limit(ip: str) -> Tuple[bool, str]:
 
         window = int(current_time // RATE_LIMIT_WINDOW)
         rate_key = _redis_key(f"rate:{ip}:{window}")
-        count = redis_client.incr(rate_key)
-        if count == 1:
+        count = int(redis_client.incrby(rate_key, cost))
+        if count == cost:
             redis_client.expire(rate_key, RATE_LIMIT_WINDOW + 1)
 
         if count > RATE_LIMIT_MAX_REQUESTS:
@@ -261,13 +266,13 @@ def check_rate_limit(ip: str) -> Tuple[bool, str]:
         # 计算当前窗口请求数
         total_requests = sum(c for t, c in request_counter[ip])
 
-        if total_requests >= RATE_LIMIT_MAX_REQUESTS:
+        if total_requests + cost > RATE_LIMIT_MAX_REQUESTS:
             # 触发限流，封禁IP
             blocked_ips[ip] = current_time + RATE_LIMIT_BLOCK_DURATION
             return False, f"请求过于频繁，已被临时封禁{RATE_LIMIT_BLOCK_DURATION}秒"
 
         # 记录请求
-        request_counter[ip].append((current_time, 1))
+        request_counter[ip].append((current_time, cost))
 
     return True, ""
 
@@ -366,7 +371,7 @@ def add_crawler_block(ip: str, reason: str, duration: int = 3600):
         conn.commit()
         conn.close()
     except Exception as e:
-        print(f"[Security] 记录封禁失败: {e}")
+        logger.warning("[Security] 记录封禁失败: %s", e)
 
 
 # ==================== 登录日志 ====================
@@ -383,7 +388,7 @@ def record_login(username: str, ip: str, user_agent: str, success: bool, failure
         conn.commit()
         conn.close()
     except Exception as e:
-        print(f"[Security] 记录登录日志失败: {e}")
+        logger.warning("[Security] 记录登录日志失败: %s", e)
 
 
 def check_login_attempts(ip: str) -> Tuple[bool, str]:
@@ -471,7 +476,7 @@ def get_login_logs(username: str = None, limit: int = 100) -> List[Dict]:
             'created_at': r['created_at']
         } for r in rows]
     except Exception as e:
-        print(f"[Security] 获取登录日志失败: {e}")
+        logger.warning("[Security] 获取登录日志失败: %s", e)
         return []
 
 
@@ -542,7 +547,7 @@ def create_session(token: str, username: str, ip: str, user_agent: str) -> bool:
         
         return True
     except Exception as e:
-        print(f"[Security] 创建会话失败: {e}")
+        logger.warning("[Security] 创建会话失败: %s", e)
         return False
 
 
@@ -607,7 +612,7 @@ def validate_session(token: str) -> Optional[Dict]:
         
         conn.close()
     except Exception as e:
-        print(f"[Security] 验证会话失败: {e}")
+        logger.warning("[Security] 验证会话失败: %s", e)
     
     return None
 
@@ -631,7 +636,7 @@ def revoke_session(token: str) -> bool:
         conn.close()
         return True
     except Exception as e:
-        print(f"[Security] 撤销会话失败: {e}")
+        logger.warning("[Security] 撤销会话失败: %s", e)
         return False
 
 
@@ -657,7 +662,7 @@ def get_user_sessions(username: str) -> List[Dict]:
             'expires_at': r['expires_at']
         } for r in rows]
     except Exception as e:
-        print(f"[Security] 获取用户会话失败: {e}")
+        logger.warning("[Security] 获取用户会话失败: %s", e)
         return []
 
 
@@ -705,7 +710,7 @@ def revoke_all_user_sessions(username: str, except_token: str = None) -> int:
         
         return count
     except Exception as e:
-        print(f"[Security] 撤销用户会话失败: {e}")
+        logger.warning("[Security] 撤销用户会话失败: %s", e)
         return 0
 
 
@@ -763,7 +768,7 @@ def record_audit_log(username: str, action: str, resource: str = None,
         conn.commit()
         conn.close()
     except Exception as e:
-        print(f"[Security] 记录审计日志失败: {e}")
+        logger.warning("[Security] 记录审计日志失败: %s", e)
 
 
 def get_audit_logs(username: str = None, action: str = None, limit: int = 100) -> List[Dict]:
@@ -801,7 +806,7 @@ def get_audit_logs(username: str = None, action: str = None, limit: int = 100) -
             'created_at': r['created_at']
         } for r in rows]
     except Exception as e:
-        print(f"[Security] 获取审计日志失败: {e}")
+        logger.warning("[Security] 获取审计日志失败: %s", e)
         return []
 
 
@@ -834,7 +839,7 @@ def record_data_history(record_id: int, action: str, changes: Dict = None, usern
         conn.commit()
         conn.close()
     except Exception as e:
-        print(f"[Security] 记录数据历史失败: {e}")
+        logger.warning("[Security] 记录数据历史失败: %s", e)
 
 
 def get_data_history(record_id: int = None, action: str = None, username: str = None, limit: int = 100) -> List[Dict]:
@@ -877,7 +882,7 @@ def get_data_history(record_id: int = None, action: str = None, username: str = 
             'created_at': r['created_at']
         } for r in rows]
     except Exception as e:
-        print(f"[Security] 获取数据历史失败: {e}")
+        logger.warning("[Security] 获取数据历史失败: %s", e)
         return []
 
 
@@ -886,4 +891,4 @@ def get_data_history(record_id: int = None, action: str = None, username: str = 
 def init_security():
     """初始化安全模块"""
     init_security_db()
-    print("[Security] 安全模块初始化完成")
+    logger.info("[Security] 安全模块初始化完成")

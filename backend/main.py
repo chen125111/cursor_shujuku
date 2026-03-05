@@ -9,12 +9,15 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse, Response, JSONResponse
 from typing import Optional, List
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+import hashlib
 import logging
 import os
 import io
 import csv
 import json
+import time
+import uuid
 
 from backend.models import (
     GasRecordCreate, GasRecordUpdate, GasRecord,
@@ -60,7 +63,7 @@ from backend.data_validation import (
     count_soft_warnings, PRESSURE_SOFT_MAX
 )
 from backend.config import get_backup_dir, get_cors_origins
-from backend.db import get_connection
+from backend.db import get_connection, is_mysql
 from backend.cache import cached, get_cache, init_cache
 
 
@@ -86,6 +89,19 @@ def require_auth(authorization: Optional[str] = Header(None)):
         raise HTTPException(status_code=401, detail="令牌无效或已过期")
 
     return user
+
+def require_public_api_key(
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    api_key: Optional[str] = Query(None, alias="api_key"),
+):
+    """公共查询接口 API Key（可选开启）。设置 PUBLIC_API_KEY 后强制校验。"""
+    expected = os.getenv("PUBLIC_API_KEY", "").strip()
+    if not expected:
+        return None
+    provided = (x_api_key or api_key or "").strip()
+    if not provided or provided != expected:
+        raise HTTPException(status_code=401, detail="API Key 无效")
+    return None
 
 # ==================== Pydantic 模型 ====================
 
@@ -127,14 +143,16 @@ app = FastAPI(
 @app.exception_handler(RequestValidationError)
 async def request_validation_exception_handler(request: Request, exc: RequestValidationError):
     # 保持 FastAPI 默认返回结构，但在此处集中记录
-    logger.info("请求参数校验失败 %s %s: %s", request.method, request.url.path, exc.errors())
-    return JSONResponse(status_code=422, content={"detail": exc.errors()})
+    rid = getattr(request.state, "request_id", None)
+    logger.info("请求参数校验失败 %s %s rid=%s: %s", request.method, request.url.path, rid, exc.errors())
+    return JSONResponse(status_code=422, content={"detail": exc.errors(), "request_id": rid})
 
 
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
-    logger.exception("未处理异常 %s %s", request.method, request.url.path)
-    return JSONResponse(status_code=500, content={"detail": "服务器内部错误"})
+    rid = getattr(request.state, "request_id", None)
+    logger.exception("未处理异常 %s %s rid=%s", request.method, request.url.path, rid)
+    return JSONResponse(status_code=500, content={"detail": "服务器内部错误", "request_id": rid})
 
 # 软提示（不阻止写入）
 def format_soft_warning(warnings: List[str]) -> str:
@@ -152,7 +170,7 @@ def format_soft_warning_count(count: int) -> str:
 def invalidate_read_caches() -> None:
     """写操作后失效统计/图表等读缓存（Redis不可用时自动降级为 no-op）。"""
     cache = get_cache()
-    if cache and cache.is_connected():
+    if cache and cache.is_available():
         cache.clear_pattern("cache:*")
 
 # 配置跨域 (CORS) - 允许前端访问
@@ -169,6 +187,35 @@ app.add_middleware(
 # ==================== 安全中间件 ====================
 
 @app.middleware("http")
+async def request_id_middleware(request: Request, call_next):
+    """为每个请求分配 request_id，并记录耗时。"""
+    rid = request.headers.get("x-request-id") or uuid.uuid4().hex
+    request.state.request_id = rid
+    start = time.time()
+    response = await call_next(request)
+    duration_ms = int((time.time() - start) * 1000)
+    response.headers["X-Request-ID"] = rid
+    response.headers["X-Response-Time-ms"] = str(duration_ms)
+    logger.info("请求完成 %s %s rid=%s status=%s %dms", request.method, request.url.path, rid, response.status_code, duration_ms)
+    return response
+
+def _rate_limit_cost(path: str, method: str) -> int:
+    """按接口复杂度加权限流，降低高耗时接口被滥用风险。"""
+    if method.upper() in ("POST", "PUT", "DELETE"):
+        base = 2
+    else:
+        base = 1
+    if path.startswith("/api/query/hydrate"):
+        return 5 * base
+    if path.startswith("/api/chart/heatmap"):
+        return 10 * base
+    if path.startswith("/api/export/"):
+        return 20 * base
+    if path.startswith("/api/import"):
+        return 10 * base
+    return base
+
+@app.middleware("http")
 async def security_middleware(request: Request, call_next):
     """安全中间件 - API限流 + 防爬虫"""
     # 获取客户端信息
@@ -182,7 +229,8 @@ async def security_middleware(request: Request, call_next):
     
     if not is_whitelisted and path.startswith("/api/"):
         # 检查API限流
-        allowed, error_msg = check_rate_limit(client_ip)
+        cost = _rate_limit_cost(path, request.method)
+        allowed, error_msg = check_rate_limit(client_ip, cost=cost)
         if not allowed:
             return Response(
                 content=json.dumps({"detail": error_msg, "error_code": "RATE_LIMITED"}),
@@ -220,6 +268,31 @@ FRONTEND_INDEX = os.path.join(FRONTEND_DIR, "index.html")
 
 
 # ==================== API 路由 ====================
+
+# 端点：GET /api/health
+# 功能：健康检查（供 Docker / 监控探针使用）
+@app.get("/api/health", tags=["Health"])
+async def api_health():
+    cache = get_cache()
+    cache_stats = cache.get_stats() if cache and cache.is_available() else {"enabled": False}
+    try:
+        with get_connection(dict_cursor=True) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) as count FROM gas_mixture")
+            row = cursor.fetchone()
+            count = int(row["count"]) if row and "count" in row else 0
+    except Exception:
+        logger.exception("health 检查数据库失败")
+        count = None
+
+    return {
+        "status": "ok",
+        "service": "gas_hydrate_api",
+        "version": app.version,
+        "database": "mysql" if is_mysql() else "sqlite",
+        "record_count": count,
+        "cache": cache_stats,
+    }
 
 # 端点：GET /api/records
 # 功能：获取气体混合物记录列表，支持分页与温度/压力区间筛选。
@@ -467,16 +540,12 @@ async def api_chart_composition():
 async def api_cache_stats():
     """获取缓存统计信息"""
     cache = get_cache()
-    if cache and cache.is_connected():
-        stats = cache.get_stats()
-        return {
-            "success": True,
-            "data": stats
-        }
+    if cache and cache.is_available():
+        return {"success": True, "data": cache.get_stats()}
     return {
         "success": False,
-        "message": "缓存未连接",
-        "data": {"connected": False}
+        "message": "缓存未启用",
+        "data": {"enabled": False}
     }
 
 
@@ -492,7 +561,7 @@ async def api_clear_cache(user: dict = Depends(require_auth)):
         raise HTTPException(status_code=403, detail="权限不足")
     
     cache = get_cache()
-    if cache and cache.is_connected():
+    if cache and cache.is_available():
         cleared = cache.clear_pattern("cache:*")
         return {
             "success": True,
@@ -500,7 +569,7 @@ async def api_clear_cache(user: dict = Depends(require_auth)):
         }
     return {
         "success": False,
-        "message": "缓存未连接"
+        "message": "缓存未启用"
     }
 
 
@@ -521,7 +590,7 @@ async def api_query_by_composition(
     x_n2: Optional[float] = Query(None, description="N2 摩尔分数"),
     x_h2s: Optional[float] = Query(None, description="H2S 摩尔分数"),
     x_ic4h10: Optional[float] = Query(None, description="i-C4H10 摩尔分数"),
-    tolerance: float = Query(0.02, description="允许的误差范围，默认2%"),
+    tolerance: float = Query(0.02, ge=0.0, le=0.2, description="允许的误差范围，默认2%"),
     strict: bool = Query(True, description="严格模式：未输入的组分要求接近0")
 ):
     """根据气体组分查询温度和压力"""
@@ -1816,11 +1885,11 @@ def _query_by_components_with_cursor(cursor, components: List[str], temperature:
     query = f"""
         SELECT temperature, pressure, {', '.join(PUBLIC_COMPONENT_COLUMNS)}
         FROM gas_mixture
-        WHERE {where_clause} AND ABS(temperature - ?) <= 5
+        WHERE {where_clause} AND (temperature >= ? AND temperature <= ?)
         ORDER BY ABS(temperature - ?)
         LIMIT 1
     """
-    cursor.execute(query, [temperature, temperature])
+    cursor.execute(query, [temperature - 5.0, temperature + 5.0, temperature])
     return cursor.fetchone()
 
 
@@ -1849,7 +1918,7 @@ class RangeQueryRequest(BaseModel):
 # 参数（Body）：`AvailableComponentsRequest`（selected：已选组分字段名列表）
 # 返回值：成功返回 `{success, available, match_count}`；失败返回 `{success:false, message}`。
 @app.post("/api/components/available", tags=["Public Query"])
-async def api_available_components(request: AvailableComponentsRequest):
+async def api_available_components(request: AvailableComponentsRequest, _: None = Depends(require_public_api_key)):
     """
     根据已选组分，查询数据库中还有哪些可用的组分组合
     """
@@ -1900,7 +1969,7 @@ class ComponentRangesRequest(BaseModel):
 # 参数（Body）：`ComponentRangesRequest`（components：选定组分列表）
 # 返回值：成功返回 `{success, ranges, total_records, temp_range}`；失败返回 `{success:false, message}`。
 @app.post("/api/components/ranges", tags=["Public Query"])
-async def api_component_ranges(request: ComponentRangesRequest):
+async def api_component_ranges(request: ComponentRangesRequest, _: None = Depends(require_public_api_key)):
     """
     根据选定的组分，返回数据库中每个组分的实际区间范围
     """
@@ -1960,7 +2029,7 @@ class BatchQueryRequest(BaseModel):
 # 参数（Body）：`QueryByComponentsRequest`（components：组分字段列表，temperature：温度）
 # 返回值：找到则返回 `{success:true, data:{temperature, pressure, composition}}`；否则返回 `{success:false, message}`。
 @app.post("/api/query/by-components", tags=["Public Query"])
-async def api_query_by_components(request: QueryByComponentsRequest):
+async def api_query_by_components(request: QueryByComponentsRequest, _: None = Depends(require_public_api_key)):
     """
     根据组分组合和温度查询相平衡压力
     """
@@ -2000,7 +2069,7 @@ async def api_query_by_components(request: QueryByComponentsRequest):
 # 参数（Body）：`BatchQueryRequest`（components、temperatures）
 # 返回值：`{success:true, data:{results:[...]}}`；失败返回 `{success:false, message}`。
 @app.post("/api/query/batch", tags=["Public Query"])
-async def api_batch_query(request: BatchQueryRequest):
+async def api_batch_query(request: BatchQueryRequest, _: None = Depends(require_public_api_key)):
     """
     批量查询相平衡压力
     """
@@ -2058,7 +2127,7 @@ async def api_batch_query(request: BatchQueryRequest):
 # 参数（Body）：`RangeQueryRequest`（components、ranges、temperature）
 # 返回值：找到则返回 `{success:true, data:{temperature, pressure}}`；否则返回 `{success:false, message}`。
 @app.post("/api/query/range", tags=["Public Query"])
-async def api_range_query(request: RangeQueryRequest):
+async def api_range_query(request: RangeQueryRequest, _: None = Depends(require_public_api_key)):
     """
     根据组分范围和温度查询相平衡压力
     """
@@ -2084,9 +2153,9 @@ async def api_range_query(request: RangeQueryRequest):
                     # 未选组分：必须为0或接近0
                     conditions.append(f"{comp} <= 0.02")
 
-            # 温度范围 ±5K
-            conditions.append("ABS(temperature - ?) <= 5")
-            params.append(temperature)
+            # 温度范围 ±5K（BETWEEN 更易命中索引）
+            conditions.append("(temperature >= ? AND temperature <= ?)")
+            params.extend([temperature - 5.0, temperature + 5.0])
 
             where_clause = " AND ".join(conditions)
 
@@ -2129,7 +2198,7 @@ class MatchCountRequest(BaseModel):
 # 参数（Body）：`MatchCountRequest`（components、ranges）
 # 返回值：`{success, count, display}`，display 为 "0" / "<10" / "10+" / "100+"。
 @app.post("/api/query/match-count", tags=["Public Query"])
-async def api_match_count(request: MatchCountRequest):
+async def api_match_count(request: MatchCountRequest, _: None = Depends(require_public_api_key)):
     """
     根据组分范围查询匹配的数据条数（不考虑温度）
     返回模糊数量：100+, 10+, <10, 0
@@ -2183,28 +2252,71 @@ async def api_match_count(request: MatchCountRequest):
 
 
 class HydrateQueryRequest(BaseModel):
-    components: dict  # {'x_ch4': 0.9, 'x_c2h6': 0.1, ...}
-    temperature: float
-    tolerance: float = 0.02  # 默认2%容差
+    components: dict[str, float]  # {'x_ch4': 0.9, 'x_c2h6': 0.1, ...}
+    temperature: float = Field(..., ge=100.0, le=1000.0, description="温度 (K)")
+    tolerance: float = Field(0.02, ge=0.0, le=0.2, description="组分容差（默认 2%）")
+
+
+def _validate_and_normalize_hydrate_components(components: dict, comp_cols: list[str]) -> dict[str, float]:
+    if not isinstance(components, dict):
+        raise HTTPException(status_code=400, detail="components 必须为对象")
+
+    normalized: dict[str, float] = {}
+    for k, v in components.items():
+        if k not in comp_cols:
+            raise HTTPException(status_code=400, detail=f"非法组分字段: {k}")
+        try:
+            fv = float(v)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail=f"组分 {k} 必须为数字") from None
+        if fv < 0 or fv > 1:
+            raise HTTPException(status_code=400, detail=f"组分 {k} 必须在 0-1 范围内")
+        normalized[k] = fv
+
+    # 允许缺省字段：未提供的组分视为 0
+    for col in comp_cols:
+        normalized.setdefault(col, 0.0)
+
+    total = sum(normalized.values())
+    if total <= 0:
+        raise HTTPException(status_code=400, detail="组分不能全部为 0")
+    # 基础约束：避免明显异常输入造成全表扫描
+    if abs(total - 1.0) > 0.2:
+        raise HTTPException(status_code=400, detail=f"组分之和为 {total:.4f}，应接近 1.0")
+    return normalized
 
 # 端点：POST /api/query/hydrate
 # 功能：气体水合物相平衡查询：输入组分与温度，按容差与温度范围匹配最接近实验点并返回压力与匹配度分数。
 # 参数（Body）：`HydrateQueryRequest`（components、temperature、tolerance）
 # 返回值：找到则返回 `{success:true, data:{temperature, pressure, match_score}}`；否则返回 `{success:false, message}`。
 @app.post("/api/query/hydrate", tags=["Public Query"])
-async def api_hydrate_query(request: HydrateQueryRequest):
+async def api_hydrate_query(request: HydrateQueryRequest, _: None = Depends(require_public_api_key)):
     """
     气体水合物相平衡查询接口
     - 用户输入组分摩尔分数 + 温度
     - 查找最匹配的实验数据点
     - 返回相平衡压力
     """
-    components = request.components
-    temperature = request.temperature
-    tolerance = request.tolerance
-    
-    # 组分列表
+    temperature = float(request.temperature)
+    tolerance = float(request.tolerance)
+
+    # 组分列表（固定白名单，防止注入）
     comp_cols = ['x_ch4', 'x_c2h6', 'x_c3h8', 'x_co2', 'x_n2', 'x_h2s', 'x_ic4h10']
+    components = _validate_and_normalize_hydrate_components(request.components, comp_cols)
+
+    # 缓存（Redis 优先，内存回退）
+    cache = get_cache()
+    cache_key = None
+    missing = object()
+    hydrate_cache_ttl = int(os.getenv("HYDRATE_CACHE_TTL", "60"))
+    hydrate_negative_ttl = int(os.getenv("HYDRATE_CACHE_NEGATIVE_TTL", "15"))
+    if cache and cache.is_available():
+        payload = {"components": {k: components[k] for k in comp_cols}, "temperature": temperature, "tolerance": tolerance}
+        digest = hashlib.md5(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+        cache_key = f"cache:hydrate_query:{digest}"
+        cached_val = cache.get(cache_key, default=missing)
+        if cached_val is not missing:
+            return cached_val
     
     try:
         with get_connection(dict_cursor=True) as conn:
@@ -2215,19 +2327,21 @@ async def api_hydrate_query(request: HydrateQueryRequest):
             params = []
 
             for col in comp_cols:
-                user_val = components.get(col, 0)
+                user_val = components.get(col, 0.0)
                 if user_val > 0.001:  # 用户输入了该组分
-                    # 允许一定容差
-                    conditions.append(f"ABS({col} - ?) <= ?")
-                    params.extend([user_val, tolerance])
+                    # BETWEEN 可更好利用索引（相比 ABS(col-?)<=?）
+                    min_val = max(0.0, user_val - tolerance)
+                    max_val = min(1.0, user_val + tolerance)
+                    conditions.append(f"({col} >= ? AND {col} <= ?)")
+                    params.extend([min_val, max_val])
                 else:
                     # 用户没输入该组分，要求数据库中也接近0
                     conditions.append(f"{col} <= ?")
                     params.append(tolerance)
 
-            # 温度筛选 - 允许±5K范围
-            conditions.append("ABS(temperature - ?) <= 5")
-            params.append(temperature)
+            # 温度筛选 - 允许±5K范围（BETWEEN 更易命中索引）
+            conditions.append("(temperature >= ? AND temperature <= ?)")
+            params.extend([temperature - 5.0, temperature + 5.0])
 
             where_clause = " AND ".join(conditions)
 
@@ -2259,7 +2373,7 @@ async def api_hydrate_query(request: HydrateQueryRequest):
 
                 match_score = max(0, min(100, round(match_score)))
 
-                return {
+                result = {
                     "success": True,
                     "data": {
                         "temperature": row['temperature'],
@@ -2267,14 +2381,20 @@ async def api_hydrate_query(request: HydrateQueryRequest):
                         "match_score": match_score
                     }
                 }
-            return {
-                "success": False,
-                "message": "未找到匹配的实验数据，请调整组分或温度"
-            }
+                if cache_key and cache and cache.is_available():
+                    cache.set(cache_key, result, ttl=hydrate_cache_ttl)
+                return result
+            result = {"success": False, "message": "未找到匹配的实验数据，请调整组分或温度"}
+            if cache_key and cache and cache.is_available():
+                cache.set(cache_key, result, ttl=hydrate_negative_ttl)
+            return result
             
     except Exception:
         logger.exception("hydrate query 查询失败")
-        return {"success": False, "message": "查询失败"}
+        result = {"success": False, "message": "查询失败"}
+        if cache_key and cache and cache.is_available():
+            cache.set(cache_key, result, ttl=hydrate_negative_ttl)
+        return result
 
 
 # ==================== 数据模板 API ====================
@@ -2473,8 +2593,10 @@ async def startup_event():
     cache = init_cache()
     if cache.is_connected():
         logger.info("[Cache] Redis缓存已连接")
+    elif cache.is_available():
+        logger.info("[Cache] Redis未连接，已启用内存缓存回退")
     else:
-        logger.warning("[Cache] Redis未连接或已禁用，缓存功能不可用")
+        logger.warning("[Cache] 缓存已禁用（CACHE_ENABLED=0）")
     
     logger.info("[App] 系统启动完成 v4.0")
 
