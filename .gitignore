@@ -64,6 +64,13 @@ data/
 # Docker
 docker-compose.override.yml
 
+# SSL/Certbot（保留目录结构，忽略证书文件）
+certbot/conf/live/
+certbot/conf/archive/
+certbot/conf/renewal/
+!certbot/conf/.gitkeep
+!certbot/www/.gitkeep
+
 # Test
 .coverage
 htmlcov/

@@ -1,0 +1,25 @@
+# ==========================================
+# 实验室管理系统 - 生产环境 Docker Compose
+# 使用 SSL + MySQL
+# 用法: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+# ==========================================
+
+version: '3.8'
+
+services:
+  nginx:
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./certbot/conf:/etc/nginx/ssl:ro
+      - ./certbot/www:/var/www/certbot:ro
+
+  backend:
+    environment:
+      - DATABASE_URL=mysql+pymysql://${MYSQL_USER:-gasapp}:${MYSQL_PASSWORD:-gasapp_password}@mysql:3306/gas_data
+      - SECURITY_DATABASE_URL=mysql+pymysql://${MYSQL_USER:-gasapp}:${MYSQL_PASSWORD:-gasapp_password}@mysql:3306/security_db
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  mysql:
+    profiles: []  # 在生产模式下启用 MySQL
