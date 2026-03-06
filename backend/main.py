@@ -8,7 +8,7 @@ from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Header, Dep
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse, Response, JSONResponse
-from typing import Optional, List
+from typing import Any, Mapping, Optional, Sequence, TypedDict, List
 from pydantic import BaseModel
 import logging
 import os
@@ -1785,496 +1785,639 @@ async def api_restore_groups(request: GroupBatchRequest, user: dict = Depends(re
 
 # ==================== 受保护的公开查询 API ====================
 
-PUBLIC_COMPONENT_COLUMNS = ['x_ch4', 'x_c2h6', 'x_c3h8', 'x_co2', 'x_n2', 'x_h2s', 'x_ic4h10']
-PUBLIC_COMPONENT_SET = set(PUBLIC_COMPONENT_COLUMNS)
+type JSONDict = dict[str, Any]
+
+COMPONENT_COLUMNS: tuple[str, ...] = (
+    "x_ch4",
+    "x_c2h6",
+    "x_c3h8",
+    "x_co2",
+    "x_n2",
+    "x_h2s",
+    "x_ic4h10",
+)
+COMPONENT_SET = set(COMPONENT_COLUMNS)
+ZERO_COMPONENT_THRESHOLD = 0.02
+DEFAULT_HYDRATE_COMPONENT_THRESHOLD = 0.001
+TEMPERATURE_MATCH_WINDOW = 5.0
+MIN_QUERY_TEMPERATURE = 100.0
+MAX_QUERY_TEMPERATURE = 400.0
 BATCH_QUERY_LIMIT = 50
 
 
-def _validate_component_list(components: List[str]) -> List[str]:
+class ComponentRange(TypedDict):
+    min: float
+    max: float
+
+
+def _raise_query_internal_error(scope: str, exc: Exception) -> None:
+    if isinstance(exc, HTTPException):
+        raise exc
+    logger.exception("%s 查询失败", scope)
+    raise HTTPException(status_code=500, detail="查询失败") from None
+
+
+def _build_failed_response(
+    message: str,
+    *,
+    include_data: bool = False,
+    data: Optional[JSONDict] = None,
+    **extra: Any,
+) -> JSONDict:
+    """保持旧版端点风格：业务失败时返回 success=false。"""
+    response: JSONDict = {"success": False, "message": message}
+    if include_data:
+        response["data"] = data if data is not None else {}
+    response.update(extra)
+    return response
+
+
+def _legacy_error_response(
+    exc: HTTPException,
+    *,
+    include_data: bool = False,
+    data: Optional[JSONDict] = None,
+    **extra: Any,
+) -> JSONDict:
+    detail = exc.detail if isinstance(exc.detail, str) else "查询失败"
+    return _build_failed_response(detail, include_data=include_data, data=data, **extra)
+
+
+def _validate_component_list(components: Sequence[str]) -> list[str]:
     """白名单校验，避免将用户输入拼接进 SQL 造成注入风险。"""
     if not components:
         return []
-    seen = set()
-    normalized: List[str] = []
-    for comp in components:
-        if comp not in PUBLIC_COMPONENT_SET:
-            raise HTTPException(status_code=400, detail=f"非法组分字段: {comp}")
-        if comp not in seen:
-            normalized.append(comp)
-            seen.add(comp)
-    return normalized
+
+    normalized_components: list[str] = []
+    seen_components: set[str] = set()
+    for component in components:
+        if component not in COMPONENT_SET:
+            raise HTTPException(status_code=400, detail=f"非法组分字段: {component}")
+        if component not in seen_components:
+            normalized_components.append(component)
+            seen_components.add(component)
+    return normalized_components
 
 
-def _build_component_conditions(components: List[str]) -> str:
-    conditions = [f"{comp} > 0" for comp in components]
-    conditions.extend([f"{comp} <= 0.02" for comp in PUBLIC_COMPONENT_COLUMNS if comp not in components])
+def _normalize_component_values(raw_components: Mapping[str, Any]) -> dict[str, float]:
+    if not raw_components:
+        raise HTTPException(status_code=400, detail="未提供组分数据")
+    normalized_values: dict[str, float] = {}
+    for component_name, component_value in raw_components.items():
+        if component_name not in COMPONENT_SET:
+            raise HTTPException(status_code=400, detail=f"非法组分字段: {component_name}")
+        try:
+            value = float(component_value)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail=f"组分 {component_name} 必须为数字") from None
+        if value < 0 or value > 1:
+            raise HTTPException(status_code=400, detail=f"组分 {component_name} 必须在 0~1 范围内")
+        normalized_values[component_name] = value
+    return normalized_values
+
+
+def _validate_temperature(temperature: float) -> float:
+    if temperature < MIN_QUERY_TEMPERATURE or temperature > MAX_QUERY_TEMPERATURE:
+        raise HTTPException(
+            status_code=400,
+            detail=f"温度超出范围({MIN_QUERY_TEMPERATURE:.0f}-{MAX_QUERY_TEMPERATURE:.0f}K)",
+        )
+    return temperature
+
+
+def _validate_tolerance(tolerance: float) -> float:
+    if tolerance <= 0:
+        raise HTTPException(status_code=400, detail="容差必须大于 0")
+    if tolerance > 0.2:
+        raise HTTPException(status_code=400, detail="容差过大，请设置在 0~0.2")
+    return tolerance
+
+
+def _build_presence_conditions(selected_components: Sequence[str]) -> str:
+    conditions = [f"{component} > 0" for component in selected_components]
+    conditions.extend(
+        f"{component} <= {ZERO_COMPONENT_THRESHOLD}" for component in COMPONENT_COLUMNS if component not in selected_components
+    )
     return " AND ".join(conditions) if conditions else "1=1"
 
 
-def _query_by_components_with_cursor(cursor, components: List[str], temperature: float):
-    where_clause = _build_component_conditions(components)
-    query = f"""
-        SELECT temperature, pressure, {', '.join(PUBLIC_COMPONENT_COLUMNS)}
+def _get_range_pair(ranges: Mapping[str, Mapping[str, Any]], component: str) -> tuple[float, float]:
+    value_range = ranges.get(component)
+    if not isinstance(value_range, Mapping):
+        raise HTTPException(status_code=400, detail=f"组分 {component} 的 ranges 格式不正确")
+    if "min" not in value_range or "max" not in value_range:
+        raise HTTPException(status_code=400, detail=f"组分 {component} 的 ranges 缺少 min/max")
+    try:
+        min_value = float(value_range["min"])
+        max_value = float(value_range["max"])
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail=f"组分 {component} 的 min/max 必须为数字") from None
+    if min_value > max_value:
+        raise HTTPException(status_code=400, detail=f"组分 {component} 的 min 不能大于 max")
+    return min_value, max_value
+
+
+def _build_range_sql(
+    selected_components: Sequence[str],
+    ranges: Mapping[str, Mapping[str, Any]],
+) -> tuple[list[str], list[float]]:
+    conditions: list[str] = []
+    params: list[float] = []
+    for component in COMPONENT_COLUMNS:
+        if component in selected_components:
+            min_value, max_value = _get_range_pair(ranges, component)
+            conditions.append(f"({component} >= ? AND {component} <= ?)")
+            params.extend([min_value, max_value])
+        else:
+            conditions.append(f"{component} <= {ZERO_COMPONENT_THRESHOLD}")
+    return conditions, params
+
+
+def _query_closest_record_with_composition(
+    cursor: Any,
+    where_clause: str,
+    params: list[float],
+    temperature: float,
+) -> Optional[Mapping[str, Any]]:
+    query_sql = f"""
+        SELECT temperature, pressure, {', '.join(COMPONENT_COLUMNS)}
         FROM gas_mixture
-        WHERE {where_clause} AND ABS(temperature - ?) <= 5
+        WHERE {where_clause} AND ABS(temperature - ?) <= ?
         ORDER BY ABS(temperature - ?)
         LIMIT 1
     """
-    cursor.execute(query, [temperature, temperature])
+    query_params = [*params, temperature, TEMPERATURE_MATCH_WINDOW, temperature]
+    cursor.execute(query_sql, query_params)
     return cursor.fetchone()
 
 
-def _get_range_pair(ranges: dict, comp: str) -> tuple[float, float]:
-    r = ranges.get(comp)
-    if not isinstance(r, dict):
-        raise HTTPException(status_code=400, detail=f"组分 {comp} 的 ranges 格式不正确")
-    if "min" not in r or "max" not in r:
-        raise HTTPException(status_code=400, detail=f"组分 {comp} 的 ranges 缺少 min/max")
-    try:
-        return float(r["min"]), float(r["max"])
-    except (TypeError, ValueError):
-        raise HTTPException(status_code=400, detail=f"组分 {comp} 的 min/max 必须为数字") from None
-
-
-class AvailableComponentsRequest(BaseModel):
-    selected: List[str]  # ['x_ch4', 'x_c2h6', ...]
-
-class RangeQueryRequest(BaseModel):
-    components: List[str]
-    ranges: dict  # {'x_ch4': {'min': 0.9, 'max': 0.95}, ...}
-    temperature: float
-
-# 端点：POST /api/components/available
-# 功能：在“已选组分必须 >0”的条件下，返回还能追加哪些组分（数据库中存在记录）以及匹配记录数。
-# 参数（Body）：`AvailableComponentsRequest`（selected：已选组分字段名列表）
-# 返回值：成功返回 `{success, available, match_count}`；失败返回 `{success:false, message}`。
-@app.post("/api/components/available", tags=["Public Query"])
-async def api_available_components(request: AvailableComponentsRequest):
+def _query_closest_record_without_composition(
+    cursor: Any,
+    where_clause: str,
+    params: list[float],
+    temperature: float,
+) -> Optional[Mapping[str, Any]]:
+    query_sql = f"""
+        SELECT temperature, pressure
+        FROM gas_mixture
+        WHERE {where_clause} AND ABS(temperature - ?) <= ?
+        ORDER BY ABS(temperature - ?)
+        LIMIT 1
     """
-    根据已选组分，查询数据库中还有哪些可用的组分组合
-    """
-    selected = _validate_component_list(request.selected)
-    
+    query_params = [*params, temperature, TEMPERATURE_MATCH_WINDOW, temperature]
+    cursor.execute(query_sql, query_params)
+    return cursor.fetchone()
+
+
+def _extract_composition(result_row: Mapping[str, Any]) -> dict[str, float]:
+    return {component: float(result_row[component]) for component in COMPONENT_COLUMNS}
+
+
+def _format_count_display(count: int) -> str:
+    if count == 0:
+        return "0"
+    if count < 10:
+        return "<10"
+    if count < 100:
+        return "10+"
+    return "100+"
+
+
+def _calculate_hydrate_match_score(
+    user_components: Mapping[str, float],
+    record_row: Mapping[str, Any],
+    query_temperature: float,
+) -> int:
+    # 评分规则：组分偏差每 1% 扣 1 分；温差每 1K 扣 2 分。
+    score = 100.0
+    for component in COMPONENT_COLUMNS:
+        user_value = user_components.get(component, 0.0)
+        db_value = float(record_row[component])
+        difference = abs(user_value - db_value)
+        if difference > DEFAULT_HYDRATE_COMPONENT_THRESHOLD:
+            score -= difference * 100
+    score -= abs(float(record_row["temperature"]) - query_temperature) * 2
+    return int(max(0, min(100, round(score))))
+
+
+def _service_available_components(selected: Sequence[str]) -> JSONDict:
+    selected_components = _validate_component_list(selected)
     try:
         with get_connection(dict_cursor=True) as conn:
             cursor = conn.cursor()
+            where_clause = " AND ".join(f"{component} > 0" for component in selected_components) if selected_components else "1=1"
 
-            # 构建查询条件：已选组分必须 > 0
-            conditions = [f"{comp} > 0" for comp in selected]
-            where_clause = " AND ".join(conditions) if conditions else "1=1"
-
-            # 单次聚合查询：匹配数 + 各组分是否可用（避免 N+1 COUNT 查询）
-            select_cols = ["COUNT(*) as match_count"]
-            select_cols.extend(
-                [f"SUM(CASE WHEN {comp} > 0 THEN 1 ELSE 0 END) as {comp}_count" for comp in PUBLIC_COMPONENT_COLUMNS]
+            aggregate_columns = ["COUNT(*) as match_count"]
+            aggregate_columns.extend(
+                f"SUM(CASE WHEN {component} > 0 THEN 1 ELSE 0 END) as {component}_count"
+                for component in COMPONENT_COLUMNS
             )
             cursor.execute(
-                f"SELECT {', '.join(select_cols)} FROM gas_mixture WHERE {where_clause}"
+                f"SELECT {', '.join(aggregate_columns)} FROM gas_mixture WHERE {where_clause}"
             )
-            row = cursor.fetchone()
-            match_count = row["match_count"] if row else 0
+            result_row = cursor.fetchone()
 
-            available = []
-            for comp in PUBLIC_COMPONENT_COLUMNS:
-                if comp in selected:
-                    continue
-                if row and (row.get(f"{comp}_count") or 0) > 0:
-                    available.append(comp)
-
-            return {
-                "success": True,
-                "available": available,
-                "match_count": match_count
-            }
-        
-    except Exception:
-        logger.exception("available components 查询失败")
-        return {"success": False, "message": "查询失败"}
+            available_components = [
+                component
+                for component in COMPONENT_COLUMNS
+                if component not in selected_components and result_row and (result_row.get(f"{component}_count") or 0) > 0
+            ]
+            match_count = int(result_row["match_count"]) if result_row else 0
+            return {"success": True, "available": available_components, "match_count": match_count}
+    except Exception as exc:
+        _raise_query_internal_error("available components", exc)
 
 
-class ComponentRangesRequest(BaseModel):
-    components: List[str]  # ['x_ch4', 'x_c2h6', ...]
-
-# 端点：POST /api/components/ranges
-# 功能：在“已选组分 >0 且未选组分接近 0”的条件下，返回每个已选组分在库中的实际 min/max，以及记录数与温度范围。
-# 参数（Body）：`ComponentRangesRequest`（components：选定组分列表）
-# 返回值：成功返回 `{success, ranges, total_records, temp_range}`；失败返回 `{success:false, message}`。
-@app.post("/api/components/ranges", tags=["Public Query"])
-async def api_component_ranges(request: ComponentRangesRequest):
-    """
-    根据选定的组分，返回数据库中每个组分的实际区间范围
-    """
-    components = _validate_component_list(request.components)
-    
+def _service_component_ranges(components: Sequence[str]) -> JSONDict:
+    selected_components = _validate_component_list(components)
     try:
         with get_connection(dict_cursor=True) as conn:
             cursor = conn.cursor()
-        
-            # 构建查询条件：已选组分必须 > 0，未选组分必须接近0
-            conditions = [f"{comp} > 0" for comp in components]
-            conditions.extend([f"{comp} <= 0.02" for comp in PUBLIC_COMPONENT_COLUMNS if comp not in components])
-            where_clause = " AND ".join(conditions) if conditions else "1=1"
+            where_clause = _build_presence_conditions(selected_components)
 
-            # 单次聚合：所有组分 min/max + 温度范围 + 总数
-            select_cols = ["COUNT(*) as total_records", "MIN(temperature) as min_temp", "MAX(temperature) as max_temp"]
-            select_cols.extend([f"MIN({c}) as {c}_min, MAX({c}) as {c}_max" for c in PUBLIC_COMPONENT_COLUMNS])
-            cursor.execute(f"SELECT {', '.join(select_cols)} FROM gas_mixture WHERE {where_clause}")
-            row = cursor.fetchone()
+            select_columns = [
+                "COUNT(*) as total_records",
+                "MIN(temperature) as min_temp",
+                "MAX(temperature) as max_temp",
+            ]
+            select_columns.extend(
+                f"MIN({component}) as {component}_min, MAX({component}) as {component}_max"
+                for component in COMPONENT_COLUMNS
+            )
+            cursor.execute(f"SELECT {', '.join(select_columns)} FROM gas_mixture WHERE {where_clause}")
+            result_row = cursor.fetchone()
 
-            total_records = row["total_records"] if row else 0
-            ranges = {}
-            if row:
-                for comp in components:
-                    min_val = row.get(f"{comp}_min")
-                    max_val = row.get(f"{comp}_max")
-                    if min_val is not None:
-                        ranges[comp] = {"min": min_val, "max": max_val}
+            ranges: dict[str, ComponentRange] = {}
+            if result_row:
+                for component in selected_components:
+                    min_value = result_row.get(f"{component}_min")
+                    max_value = result_row.get(f"{component}_max")
+                    if min_value is not None and max_value is not None:
+                        ranges[component] = {"min": float(min_value), "max": float(max_value)}
 
-            temp_range = None
-            if row and row.get("min_temp") is not None:
-                temp_range = {"min": row["min_temp"], "max": row["max_temp"]}
+            temperature_range = None
+            if result_row and result_row.get("min_temp") is not None and result_row.get("max_temp") is not None:
+                temperature_range = {
+                    "min": float(result_row["min_temp"]),
+                    "max": float(result_row["max_temp"]),
+                }
 
+            total_records = int(result_row["total_records"]) if result_row else 0
             return {
                 "success": True,
                 "ranges": ranges,
                 "total_records": total_records,
-                "temp_range": temp_range
+                "temp_range": temperature_range,
             }
-        
-    except Exception:
-        logger.exception("component ranges 查询失败")
-        return {"success": False, "message": "查询失败"}
+    except Exception as exc:
+        _raise_query_internal_error("component ranges", exc)
+
+
+def _service_query_by_components(components: Sequence[str], temperature: float) -> JSONDict:
+    selected_components = _validate_component_list(components)
+    query_temperature = _validate_temperature(float(temperature))
+    where_clause = _build_presence_conditions(selected_components)
+    try:
+        with get_connection(dict_cursor=True) as conn:
+            cursor = conn.cursor()
+            result_row = _query_closest_record_with_composition(
+                cursor=cursor,
+                where_clause=where_clause,
+                params=[],
+                temperature=query_temperature,
+            )
+            if not result_row:
+                return _build_failed_response("在指定的温度范围内未找到数据")
+            return {
+                "success": True,
+                "data": {
+                    "temperature": float(result_row["temperature"]),
+                    "pressure": float(result_row["pressure"]),
+                    "composition": _extract_composition(result_row),
+                },
+            }
+    except Exception as exc:
+        _raise_query_internal_error("query by components", exc)
+
+
+def _service_batch_query(components: Sequence[str], temperatures: Sequence[float]) -> JSONDict:
+    selected_components = _validate_component_list(components)
+    temperature_list: list[float] = []
+    for idx, value in enumerate(temperatures or [], start=1):
+        try:
+            temperature_list.append(float(value))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail=f"第 {idx} 个温度不是有效数字") from None
+    if not temperature_list:
+        return _build_failed_response("未提供温度列表", include_data=True, data={"results": []})
+    if len(temperature_list) > BATCH_QUERY_LIMIT:
+        return _build_failed_response(
+            f"批量查询最多支持 {BATCH_QUERY_LIMIT} 条温度",
+            include_data=True,
+            data={"results": []},
+        )
+
+    where_clause = _build_presence_conditions(selected_components)
+    batch_results: list[JSONDict] = []
+
+    try:
+        with get_connection(dict_cursor=True) as conn:
+            cursor = conn.cursor()
+            for query_temperature in temperature_list:
+                if query_temperature < MIN_QUERY_TEMPERATURE or query_temperature > MAX_QUERY_TEMPERATURE:
+                    batch_results.append(
+                        {
+                            "temperature": query_temperature,
+                            "success": False,
+                            "status": "invalid",
+                            "message": f"温度超出范围({MIN_QUERY_TEMPERATURE:.0f}-{MAX_QUERY_TEMPERATURE:.0f}K)",
+                        }
+                    )
+                    continue
+
+                result_row = _query_closest_record_with_composition(
+                    cursor=cursor,
+                    where_clause=where_clause,
+                    params=[],
+                    temperature=query_temperature,
+                )
+                if result_row:
+                    batch_results.append(
+                        {
+                            "temperature": query_temperature,
+                            "success": True,
+                            "status": "success",
+                            "pressure": float(result_row["pressure"]),
+                            "matched_temperature": float(result_row["temperature"]),
+                        }
+                    )
+                    continue
+
+                batch_results.append(
+                    {
+                        "temperature": query_temperature,
+                        "success": False,
+                        "status": "no-data",
+                        "message": "未找到匹配数据",
+                    }
+                )
+
+        return {"success": True, "data": {"results": batch_results}}
+    except Exception as exc:
+        _raise_query_internal_error("batch query", exc)
+
+
+def _service_range_query(
+    components: Sequence[str],
+    ranges: Mapping[str, Mapping[str, Any]],
+    temperature: float,
+) -> JSONDict:
+    selected_components = _validate_component_list(components)
+    query_temperature = _validate_temperature(float(temperature))
+    query_conditions, query_params = _build_range_sql(selected_components, ranges)
+    where_clause = " AND ".join(query_conditions) if query_conditions else "1=1"
+    try:
+        with get_connection(dict_cursor=True) as conn:
+            cursor = conn.cursor()
+            result_row = _query_closest_record_without_composition(
+                cursor=cursor,
+                where_clause=where_clause,
+                params=query_params,
+                temperature=query_temperature,
+            )
+            if not result_row:
+                return _build_failed_response("在指定的组分范围和温度下未找到数据")
+            return {
+                "success": True,
+                "data": {
+                    "temperature": float(result_row["temperature"]),
+                    "pressure": float(result_row["pressure"]),
+                },
+            }
+    except Exception as exc:
+        _raise_query_internal_error("range query", exc)
+
+
+def _service_match_count(
+    components: Sequence[str],
+    ranges: Mapping[str, Mapping[str, Any]],
+) -> JSONDict:
+    selected_components = _validate_component_list(components)
+    query_conditions, query_params = _build_range_sql(selected_components, ranges)
+    where_clause = " AND ".join(query_conditions) if query_conditions else "1=1"
+    try:
+        with get_connection(dict_cursor=True) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                f"SELECT COUNT(*) as count FROM gas_mixture WHERE {where_clause}",
+                query_params,
+            )
+            result_row = cursor.fetchone()
+            match_count = int(result_row["count"]) if result_row else 0
+            return {
+                "success": True,
+                "count": match_count,
+                "display": _format_count_display(match_count),
+            }
+    except Exception as exc:
+        _raise_query_internal_error("match count", exc)
+
+
+def _service_hydrate_query(
+    components: Mapping[str, Any],
+    temperature: float,
+    tolerance: float,
+) -> JSONDict:
+    normalized_components = _normalize_component_values(components)
+    query_temperature = _validate_temperature(float(temperature))
+    query_tolerance = _validate_tolerance(float(tolerance))
+    try:
+        with get_connection(dict_cursor=True) as conn:
+            cursor = conn.cursor()
+
+            conditions: list[str] = []
+            params: list[float] = []
+            for component in COMPONENT_COLUMNS:
+                user_value = normalized_components.get(component, 0.0)
+                if user_value > DEFAULT_HYDRATE_COMPONENT_THRESHOLD:
+                    conditions.append(f"ABS({component} - ?) <= ?")
+                    params.extend([user_value, query_tolerance])
+                else:
+                    conditions.append(f"{component} <= ?")
+                    params.append(query_tolerance)
+
+            where_clause = " AND ".join(conditions) if conditions else "1=1"
+            result_row = _query_closest_record_with_composition(
+                cursor=cursor,
+                where_clause=where_clause,
+                params=params,
+                temperature=query_temperature,
+            )
+            if not result_row:
+                return _build_failed_response("未找到匹配的实验数据，请调整组分或温度")
+
+            match_score = _calculate_hydrate_match_score(
+                user_components=normalized_components,
+                record_row=result_row,
+                query_temperature=query_temperature,
+            )
+            return {
+                "success": True,
+                "data": {
+                    "temperature": float(result_row["temperature"]),
+                    "pressure": float(result_row["pressure"]),
+                    "match_score": match_score,
+                },
+            }
+    except Exception as exc:
+        _raise_query_internal_error("hydrate query", exc)
+
+
+class AvailableComponentsRequest(BaseModel):
+    selected: list[str]
+
+
+class ComponentRangesRequest(BaseModel):
+    components: list[str]
 
 
 class QueryByComponentsRequest(BaseModel):
-    components: List[str]
+    components: list[str]
     temperature: float
 
 
 class BatchQueryRequest(BaseModel):
-    components: List[str]
-    temperatures: List[float]
-
-# 端点：POST /api/query/by-components
-# 功能：根据“组分组合 + 温度”查询最接近的相平衡压力（温度允许 ±5K）。
-# 参数（Body）：`QueryByComponentsRequest`（components：组分字段列表，temperature：温度）
-# 返回值：找到则返回 `{success:true, data:{temperature, pressure, composition}}`；否则返回 `{success:false, message}`。
-@app.post("/api/query/by-components", tags=["Public Query"])
-async def api_query_by_components(request: QueryByComponentsRequest):
-    """
-    根据组分组合和温度查询相平衡压力
-    """
-    components = _validate_component_list(request.components)
-    temperature = request.temperature
-
-    try:
-        with get_connection(dict_cursor=True) as conn:
-            cursor = conn.cursor()
-            row = _query_by_components_with_cursor(cursor, components, temperature)
-
-            if row:
-                composition = {}
-                for comp in PUBLIC_COMPONENT_COLUMNS:
-                    composition[comp] = row[comp]
-
-                return {
-                    "success": True,
-                    "data": {
-                        "temperature": row['temperature'],
-                        "pressure": row['pressure'],
-                        "composition": composition
-                    }
-                }
-            return {
-                "success": False,
-                "message": "在指定的温度范围内未找到数据"
-            }
-            
-    except Exception:
-        logger.exception("query by components 查询失败")
-        return {"success": False, "message": "查询失败"}
+    components: list[str]
+    temperatures: list[float]
 
 
-# 端点：POST /api/query/batch
-# 功能：批量按组分组合 + 温度查询相平衡压力（单次请求处理多温度）。
-# 参数（Body）：`BatchQueryRequest`（components、temperatures）
-# 返回值：`{success:true, data:{results:[...]}}`；失败返回 `{success:false, message}`。
-@app.post("/api/query/batch", tags=["Public Query"])
-async def api_batch_query(request: BatchQueryRequest):
-    """
-    批量查询相平衡压力
-    """
-    components = _validate_component_list(request.components)
-    temperatures = request.temperatures or []
-
-    if not temperatures:
-        return {"success": False, "message": "未提供温度列表", "data": {"results": []}}
-    if len(temperatures) > BATCH_QUERY_LIMIT:
-        return {
-            "success": False,
-            "message": f"批量查询最多支持 {BATCH_QUERY_LIMIT} 条温度",
-            "data": {"results": []},
-        }
-
-    results = []
-    try:
-        with get_connection(dict_cursor=True) as conn:
-            cursor = conn.cursor()
-            for temp in temperatures:
-                if temp < 100 or temp > 400:
-                    results.append({
-                        "temperature": temp,
-                        "success": False,
-                        "status": "invalid",
-                        "message": "温度超出范围(100-400K)",
-                    })
-                    continue
-
-                row = _query_by_components_with_cursor(cursor, components, temp)
-                if row:
-                    results.append({
-                        "temperature": temp,
-                        "success": True,
-                        "status": "success",
-                        "pressure": row["pressure"],
-                        "matched_temperature": row["temperature"],
-                    })
-                else:
-                    results.append({
-                        "temperature": temp,
-                        "success": False,
-                        "status": "no-data",
-                        "message": "未找到匹配数据",
-                    })
-
-        return {"success": True, "data": {"results": results}}
-    except Exception:
-        logger.exception("batch query 查询失败")
-        return {"success": False, "message": "查询失败", "data": {"results": results}}
-
-
-# 端点：POST /api/query/range
-# 功能：根据“组分取值范围 + 温度”查询相平衡压力（未选组分要求接近 0；温度允许 ±5K）。
-# 参数（Body）：`RangeQueryRequest`（components、ranges、temperature）
-# 返回值：找到则返回 `{success:true, data:{temperature, pressure}}`；否则返回 `{success:false, message}`。
-@app.post("/api/query/range", tags=["Public Query"])
-async def api_range_query(request: RangeQueryRequest):
-    """
-    根据组分范围和温度查询相平衡压力
-    """
-    components = _validate_component_list(request.components)
-    ranges = request.ranges
-    temperature = request.temperature
-
-    try:
-        with get_connection(dict_cursor=True) as conn:
-            cursor = conn.cursor()
-
-            # 构建查询条件
-            conditions = []
-            params = []
-
-            for comp in PUBLIC_COMPONENT_COLUMNS:
-                if comp in components:
-                    # 已选组分：在范围内
-                    min_val, max_val = _get_range_pair(ranges, comp)
-                    conditions.append(f"({comp} >= ? AND {comp} <= ?)")
-                    params.extend([min_val, max_val])
-                else:
-                    # 未选组分：必须为0或接近0
-                    conditions.append(f"{comp} <= 0.02")
-
-            # 温度范围 ±5K
-            conditions.append("ABS(temperature - ?) <= 5")
-            params.append(temperature)
-
-            where_clause = " AND ".join(conditions)
-
-            query = f"""
-                SELECT temperature, pressure
-                FROM gas_mixture
-                WHERE {where_clause}
-                ORDER BY ABS(temperature - ?)
-                LIMIT 1
-            """
-            params.append(temperature)
-
-            cursor.execute(query, params)
-            row = cursor.fetchone()
-
-            if row:
-                return {
-                    "success": True,
-                    "data": {
-                        "temperature": row['temperature'],
-                        "pressure": row['pressure']
-                    }
-                }
-            return {
-                "success": False,
-                "message": "在指定的组分范围和温度下未找到数据"
-            }
-            
-    except Exception:
-        logger.exception("range query 查询失败")
-        return {"success": False, "message": "查询失败"}
+class RangeQueryRequest(BaseModel):
+    components: list[str]
+    ranges: dict[str, dict[str, float]]
+    temperature: float
 
 
 class MatchCountRequest(BaseModel):
-    components: List[str]
-    ranges: dict  # {'x_ch4': {'min': 0.9, 'max': 0.95}, ...}
-
-# 端点：POST /api/query/match-count
-# 功能：按组分范围估算匹配数据条数（不考虑温度），并返回模糊显示档位。
-# 参数（Body）：`MatchCountRequest`（components、ranges）
-# 返回值：`{success, count, display}`，display 为 "0" / "<10" / "10+" / "100+"。
-@app.post("/api/query/match-count", tags=["Public Query"])
-async def api_match_count(request: MatchCountRequest):
-    """
-    根据组分范围查询匹配的数据条数（不考虑温度）
-    返回模糊数量：100+, 10+, <10, 0
-    """
-    components = _validate_component_list(request.components)
-    ranges = request.ranges
-
-    try:
-        with get_connection(dict_cursor=True) as conn:
-            cursor = conn.cursor()
-
-            # 构建查询条件
-            conditions = []
-            params = []
-
-            for comp in PUBLIC_COMPONENT_COLUMNS:
-                if comp in components:
-                    # 已选组分：在范围内
-                    min_val, max_val = _get_range_pair(ranges, comp)
-                    conditions.append(f"({comp} >= ? AND {comp} <= ?)")
-                    params.extend([min_val, max_val])
-                else:
-                    # 未选组分：必须为0或接近0
-                    conditions.append(f"{comp} <= 0.02")
-
-            where_clause = " AND ".join(conditions)
-
-            cursor.execute(f"SELECT COUNT(*) as count FROM gas_mixture WHERE {where_clause}", params)
-            row = cursor.fetchone()
-            count = row['count'] if row else 0
-
-            # 返回模糊数量
-            if count == 0:
-                display = "0"
-            elif count < 10:
-                display = "<10"
-            elif count < 100:
-                display = "10+"
-            else:
-                display = "100+"
-
-            return {
-                "success": True,
-                "count": count,
-                "display": display
-            }
-        
-    except Exception:
-        logger.exception("match count 查询失败")
-        return {"success": False, "message": "查询失败", "count": 0, "display": "0"}
+    components: list[str]
+    ranges: dict[str, dict[str, float]]
 
 
 class HydrateQueryRequest(BaseModel):
-    components: dict  # {'x_ch4': 0.9, 'x_c2h6': 0.1, ...}
+    components: dict[str, float]
     temperature: float
-    tolerance: float = 0.02  # 默认2%容差
+    tolerance: float = 0.02
 
-# 端点：POST /api/query/hydrate
-# 功能：气体水合物相平衡查询：输入组分与温度，按容差与温度范围匹配最接近实验点并返回压力与匹配度分数。
-# 参数（Body）：`HydrateQueryRequest`（components、temperature、tolerance）
-# 返回值：找到则返回 `{success:true, data:{temperature, pressure, match_score}}`；否则返回 `{success:false, message}`。
-@app.post("/api/query/hydrate", tags=["Public Query"])
-async def api_hydrate_query(request: HydrateQueryRequest):
-    """
-    气体水合物相平衡查询接口
-    - 用户输入组分摩尔分数 + 温度
-    - 查找最匹配的实验数据点
-    - 返回相平衡压力
-    """
-    components = request.components
-    temperature = request.temperature
-    tolerance = request.tolerance
-    
-    # 组分列表
-    comp_cols = ['x_ch4', 'x_c2h6', 'x_c3h8', 'x_co2', 'x_n2', 'x_h2s', 'x_ic4h10']
-    
+
+# 端点：POST /api/phase-equilibrium/components/available
+# 功能：新版端点，查询已选组分下可继续添加的组分和匹配数。
+@app.post("/api/phase-equilibrium/components/available", tags=["Phase Equilibrium"])
+async def api_phase_available_components(request: AvailableComponentsRequest):
+    return _service_available_components(request.selected)
+
+
+# 端点：POST /api/components/available（兼容旧版）
+@app.post("/api/components/available", tags=["Public Query"], deprecated=True)
+async def api_available_components(request: AvailableComponentsRequest):
     try:
-        with get_connection(dict_cursor=True) as conn:
-            cursor = conn.cursor()
+        return _service_available_components(request.selected)
+    except HTTPException as exc:
+        return _legacy_error_response(exc)
 
-            # 构建查询 - 先按组分筛选，再按温度排序
-            conditions = []
-            params = []
 
-            for col in comp_cols:
-                user_val = components.get(col, 0)
-                if user_val > 0.001:  # 用户输入了该组分
-                    # 允许一定容差
-                    conditions.append(f"ABS({col} - ?) <= ?")
-                    params.extend([user_val, tolerance])
-                else:
-                    # 用户没输入该组分，要求数据库中也接近0
-                    conditions.append(f"{col} <= ?")
-                    params.append(tolerance)
+# 端点：POST /api/phase-equilibrium/components/ranges
+# 功能：新版端点，查询选定组分在库中的可用区间。
+@app.post("/api/phase-equilibrium/components/ranges", tags=["Phase Equilibrium"])
+async def api_phase_component_ranges(request: ComponentRangesRequest):
+    return _service_component_ranges(request.components)
 
-            # 温度筛选 - 允许±5K范围
-            conditions.append("ABS(temperature - ?) <= 5")
-            params.append(temperature)
 
-            where_clause = " AND ".join(conditions)
+# 端点：POST /api/components/ranges（兼容旧版）
+@app.post("/api/components/ranges", tags=["Public Query"], deprecated=True)
+async def api_component_ranges(request: ComponentRangesRequest):
+    try:
+        return _service_component_ranges(request.components)
+    except HTTPException as exc:
+        return _legacy_error_response(exc)
 
-            # 查询并计算匹配度
-            query = f"""
-                SELECT temperature, pressure, x_ch4, x_c2h6, x_c3h8, x_co2, x_n2, x_h2s, x_ic4h10
-                FROM gas_mixture
-                WHERE {where_clause}
-                ORDER BY ABS(temperature - ?)
-                LIMIT 1
-            """
-            params.append(temperature)
 
-            cursor.execute(query, params)
-            row = cursor.fetchone()
+# 端点：POST /api/phase-equilibrium/by-components
+# 功能：新版端点，按组分组合 + 温度查询相平衡压力。
+@app.post("/api/phase-equilibrium/by-components", tags=["Phase Equilibrium"])
+async def api_phase_query_by_components(request: QueryByComponentsRequest):
+    return _service_query_by_components(request.components, request.temperature)
 
-            if row:
-                # 计算匹配度分数
-                match_score = 100
-                for col in comp_cols:
-                    user_val = components.get(col, 0)
-                    db_val = row[col]
-                    diff = abs(user_val - db_val)
-                    if diff > 0.001:
-                        match_score -= diff * 100  # 每1%差异扣1分
 
-                temp_diff = abs(row['temperature'] - temperature)
-                match_score -= temp_diff * 2  # 每1K温差扣2分
+# 端点：POST /api/query/by-components（兼容旧版）
+@app.post("/api/query/by-components", tags=["Public Query"], deprecated=True)
+async def api_query_by_components(request: QueryByComponentsRequest):
+    try:
+        return _service_query_by_components(request.components, request.temperature)
+    except HTTPException as exc:
+        return _legacy_error_response(exc)
 
-                match_score = max(0, min(100, round(match_score)))
 
-                return {
-                    "success": True,
-                    "data": {
-                        "temperature": row['temperature'],
-                        "pressure": row['pressure'],
-                        "match_score": match_score
-                    }
-                }
-            return {
-                "success": False,
-                "message": "未找到匹配的实验数据，请调整组分或温度"
-            }
-            
-    except Exception:
-        logger.exception("hydrate query 查询失败")
-        return {"success": False, "message": "查询失败"}
+# 端点：POST /api/phase-equilibrium/batch
+# 功能：新版端点，批量温度查询相平衡压力。
+@app.post("/api/phase-equilibrium/batch", tags=["Phase Equilibrium"])
+async def api_phase_batch_query(request: BatchQueryRequest):
+    return _service_batch_query(request.components, request.temperatures)
+
+
+# 端点：POST /api/query/batch（兼容旧版）
+@app.post("/api/query/batch", tags=["Public Query"], deprecated=True)
+async def api_batch_query(request: BatchQueryRequest):
+    try:
+        return _service_batch_query(request.components, request.temperatures)
+    except HTTPException as exc:
+        return _legacy_error_response(exc, include_data=True, data={"results": []})
+
+
+# 端点：POST /api/phase-equilibrium/range
+# 功能：新版端点，按组分范围 + 温度查询相平衡压力。
+@app.post("/api/phase-equilibrium/range", tags=["Phase Equilibrium"])
+async def api_phase_range_query(request: RangeQueryRequest):
+    return _service_range_query(request.components, request.ranges, request.temperature)
+
+
+# 端点：POST /api/query/range（兼容旧版）
+@app.post("/api/query/range", tags=["Public Query"], deprecated=True)
+async def api_range_query(request: RangeQueryRequest):
+    try:
+        return _service_range_query(request.components, request.ranges, request.temperature)
+    except HTTPException as exc:
+        return _legacy_error_response(exc)
+
+
+# 端点：POST /api/phase-equilibrium/match-count
+# 功能：新版端点，按组分范围估算匹配数据条数。
+@app.post("/api/phase-equilibrium/match-count", tags=["Phase Equilibrium"])
+async def api_phase_match_count(request: MatchCountRequest):
+    return _service_match_count(request.components, request.ranges)
+
+
+# 端点：POST /api/query/match-count（兼容旧版）
+@app.post("/api/query/match-count", tags=["Public Query"], deprecated=True)
+async def api_match_count(request: MatchCountRequest):
+    try:
+        return _service_match_count(request.components, request.ranges)
+    except HTTPException as exc:
+        return _legacy_error_response(exc, count=0, display="0")
+
+
+# 端点：POST /api/phase-equilibrium/hydrate
+# 功能：新版端点，气体水合物相平衡查询。
+@app.post("/api/phase-equilibrium/hydrate", tags=["Phase Equilibrium"])
+async def api_phase_hydrate_query(request: HydrateQueryRequest):
+    return _service_hydrate_query(request.components, request.temperature, request.tolerance)
+
+
+# 端点：POST /api/query/hydrate（兼容旧版）
+@app.post("/api/query/hydrate", tags=["Public Query"], deprecated=True)
+async def api_hydrate_query(request: HydrateQueryRequest):
+    try:
+        return _service_hydrate_query(request.components, request.temperature, request.tolerance)
+    except HTTPException as exc:
+        return _legacy_error_response(exc)
 
 
 # ==================== 数据模板 API ====================
