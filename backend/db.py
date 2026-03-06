@@ -57,6 +57,11 @@ def _normalize_query(query: str, driver: str) -> str:
 
 
 class _CursorProxy:
+    """
+    Cursor 代理：
+    - 统一参数占位符（SQLite 用 `?`，MySQL 用 `%s`）
+    - 避免业务层在两种数据库之间切换时到处写兼容逻辑
+    """
     def __init__(self, cursor, driver: str) -> None:
         self._cursor = cursor
         self._driver = driver
@@ -76,6 +81,11 @@ class _CursorProxy:
 
 
 class _ConnectionProxy:
+    """
+    Connection 代理：
+    - 对外暴露与底层连接一致的接口
+    - `cursor()` 返回 `_CursorProxy`，保证 execute/ executemany 占位符兼容
+    """
     def __init__(self, conn, driver: str) -> None:
         self._conn = conn
         self._driver = driver
@@ -184,6 +194,16 @@ def _connect_sqlite(path: str, dict_cursor: bool) -> _ConnectionProxy:
 
 
 def open_connection(dict_cursor: bool = False) -> _ConnectionProxy:
+    """
+    打开业务数据库连接。
+
+    选择逻辑：
+    - 若 `DATABASE_URL` 指向 MySQL：连接 MySQL（可选连接池）
+    - 否则：连接 SQLite 文件（`DATABASE_PATH`）
+
+    参数：
+    - dict_cursor=True：返回可通过列名访问的 cursor 结果（SQLite 使用 Row；MySQL 使用 DictCursor）
+    """
     url = get_database_url()
     if _is_mysql_url(url):
         return _connect_mysql(url, dict_cursor)
@@ -191,6 +211,12 @@ def open_connection(dict_cursor: bool = False) -> _ConnectionProxy:
 
 
 def open_security_connection(dict_cursor: bool = False) -> _ConnectionProxy:
+    """
+    打开安全数据库连接（登录日志/审计日志/会话等）。
+
+    选择逻辑同 `open_connection`，优先使用 `SECURITY_DATABASE_URL`，
+    若为空则回落到 `DATABASE_URL`；否则使用 `SECURITY_DB_PATH`。
+    """
     url = get_security_database_url()
     if _is_mysql_url(url):
         return _connect_mysql(url, dict_cursor)
@@ -199,6 +225,13 @@ def open_security_connection(dict_cursor: bool = False) -> _ConnectionProxy:
 
 @contextmanager
 def get_connection(dict_cursor: bool = False) -> Iterator[_ConnectionProxy]:
+    """
+    业务数据库连接上下文管理器。
+
+    用法：
+    - `with get_connection(dict_cursor=True) as conn: ...`
+    - 退出时自动 close，避免连接泄漏
+    """
     conn = open_connection(dict_cursor=dict_cursor)
     try:
         yield conn
@@ -208,6 +241,9 @@ def get_connection(dict_cursor: bool = False) -> Iterator[_ConnectionProxy]:
 
 @contextmanager
 def get_security_connection(dict_cursor: bool = False) -> Iterator[_ConnectionProxy]:
+    """
+    安全数据库连接上下文管理器。
+    """
     conn = open_security_connection(dict_cursor=dict_cursor)
     try:
         yield conn

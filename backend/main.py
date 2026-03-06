@@ -1878,7 +1878,8 @@ async def api_available_components(request: AvailableComponentsRequest):
             for comp in PUBLIC_COMPONENT_COLUMNS:
                 if comp in selected:
                     continue
-                if row and (row.get(f"{comp}_count") or 0) > 0:
+                # sqlite3.Row 支持 dict 风格索引，但不支持 .get
+                if row and (row[f"{comp}_count"] or 0) > 0:
                     available.append(comp)
 
             return {
@@ -1925,13 +1926,14 @@ async def api_component_ranges(request: ComponentRangesRequest):
             ranges = {}
             if row:
                 for comp in components:
-                    min_val = row.get(f"{comp}_min")
-                    max_val = row.get(f"{comp}_max")
+                    # sqlite3.Row 支持 dict 风格索引，但不支持 .get
+                    min_val = row[f"{comp}_min"]
+                    max_val = row[f"{comp}_max"]
                     if min_val is not None:
                         ranges[comp] = {"min": min_val, "max": max_val}
 
             temp_range = None
-            if row and row.get("min_temp") is not None:
+            if row and row["min_temp"] is not None:
                 temp_range = {"min": row["min_temp"], "max": row["max_temp"]}
 
             return {
