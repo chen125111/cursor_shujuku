@@ -5,11 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>气体水合物相平衡查询系统</title>
     
-    <!-- Chart.js 数据可视化库 -->
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <!-- jsPDF 导出库 -->
-    <script src="https://cdn.jsdelivr.net/npm/jspdf@latest/dist/jspdf.umd.min.js"></script>
-    
     <style>
         * {
             margin: 0;
@@ -311,6 +306,75 @@
         .btn-query:disabled {
             background: #475569;
             cursor: not-allowed;
+        }
+
+        .inline-status {
+            margin-top: 12px;
+            padding: 10px 12px;
+            border-radius: 10px;
+            font-size: 13px;
+            line-height: 1.5;
+            border: 1px solid rgba(71, 85, 105, 0.35);
+            background: rgba(15, 23, 42, 0.55);
+            color: #cbd5f5;
+        }
+
+        .inline-status.hidden,
+        .progress-shell.hidden {
+            display: none;
+        }
+
+        .inline-status.info {
+            color: #93c5fd;
+            border-color: rgba(59, 130, 246, 0.35);
+        }
+
+        .inline-status.success {
+            color: #86efac;
+            border-color: rgba(34, 197, 94, 0.35);
+        }
+
+        .inline-status.warn {
+            color: #fdba74;
+            border-color: rgba(249, 115, 22, 0.35);
+        }
+
+        .inline-status.error {
+            color: #fecaca;
+            border-color: rgba(248, 113, 113, 0.35);
+        }
+
+        .loading-dots::after {
+            content: '';
+            display: inline-block;
+            width: 1.2em;
+            animation: dots 1.2s steps(4, end) infinite;
+            overflow: hidden;
+            vertical-align: bottom;
+        }
+
+        @keyframes dots {
+            0% { content: ''; }
+            25% { content: '.'; }
+            50% { content: '..'; }
+            75% { content: '...'; }
+            100% { content: '...'; }
+        }
+
+        .progress-shell {
+            width: 100%;
+            height: 8px;
+            margin-top: 10px;
+            border-radius: 999px;
+            overflow: hidden;
+            background: rgba(51, 65, 85, 0.7);
+        }
+
+        .progress-fill {
+            height: 100%;
+            width: 0%;
+            background: linear-gradient(135deg, #3b82f6, #34d399);
+            transition: width 0.25s ease;
         }
 
         /* 结果展示 */
@@ -759,6 +823,7 @@
             <div class="hint-box" id="selectionHint">
                 💡 请选择气体混合物包含的组分，点击确认后查看数据库中的组分区间
             </div>
+            <div class="inline-status hidden" id="selectionStatus"></div>
         </div>
 
         <!-- 步骤2: 显示组分区间 -->
@@ -769,6 +834,7 @@
             </div>
             <div class="range-display" id="rangeDisplay"></div>
             <div class="match-stats" id="matchStats"></div>
+            <div class="inline-status hidden" id="rangeStatus"></div>
         </div>
 
         <!-- 步骤3: 温度和查询 -->
@@ -783,6 +849,10 @@
                 <span class="unit">K</span>
             </div>
             <button class="btn-query" id="queryBtn" onclick="doQuery()">🔍 查询相平衡压力</button>
+            <div class="inline-status hidden" id="queryStatus"></div>
+            <div class="progress-shell hidden" id="queryProgress">
+                <div class="progress-fill" id="queryProgressFill"></div>
+            </div>
         </div>
 
         <!-- 结果展示 -->
@@ -831,17 +901,21 @@
                     <button class="btn-mini secondary" onclick="exportBatchPdf()">📄 导出 PDF</button>
                 </div>
                 <div class="batch-status" id="batchStatus"></div>
+                <div class="progress-shell hidden" id="batchProgress">
+                    <div class="progress-fill" id="batchProgressFill"></div>
+                </div>
             </div>
             <div class="batch-summary" id="batchSummary" style="display: none;"></div>
             <div id="batchResults"></div>
         </div>
 
         <!-- 数据可视化 -->
-        <div class="card charts-card">
+        <div class="card charts-card" id="chartsCard">
             <div class="card-title">
                 <span class="step">📊</span>
                 <span>数据可视化分析</span>
             </div>
+            <div class="inline-status info" id="chartsStatus">滚动到此区域后自动加载统计卡片和图表，减少首页等待时间。</div>
             
             <!-- 统计卡片 -->
             <div class="stats-grid" id="statsGrid">
@@ -930,6 +1004,17 @@
         };
 
         const API_BASE = '/api';
+        const API_TIMEOUT = 15000;
+        const CLIENT_CACHE_TTL = {
+            available: 60 * 1000,
+            ranges: 2 * 60 * 1000,
+            query: 60 * 1000,
+            batch: 60 * 1000
+        };
+        const PROGRESS_BARS = {
+            query: { wrapper: 'queryProgress', fill: 'queryProgressFill' },
+            batch: { wrapper: 'batchProgress', fill: 'batchProgressFill' }
+        };
 
         let selectedComponents = [];
         let availableComponents = Object.keys(COMPONENTS);
@@ -941,15 +1026,205 @@
         const HISTORY_LIMIT = 30;
         const FAVORITE_LIMIT = 30;
         const BATCH_LIMIT = 50;
+        const localRequestCache = new Map();
+        const pendingControllers = new Map();
+        const progressTimers = {};
+        let availableRefreshTimer = null;
         let queryHistory = [];
         let favorites = [];
         let lastQueryResult = null;
         let lastBatchResult = null;
+        let pdfLibPromise = null;
 
         document.addEventListener('DOMContentLoaded', () => {
             renderComponentButtons();
             initQueryTools();
         });
+
+        function cloneValue(value) {
+            return JSON.parse(JSON.stringify(value));
+        }
+
+        function normalizeNumber(value, digits = 4) {
+            return Number(Number(value).toFixed(digits));
+        }
+
+        function sortedComponentSignature(components) {
+            return [...(components || [])].sort().join(',');
+        }
+
+        function makeCacheKey(scope, payload) {
+            return `${scope}:${JSON.stringify(payload)}`;
+        }
+
+        function getCachedPayload(cacheKey) {
+            const cached = localRequestCache.get(cacheKey);
+            if (!cached) return null;
+            if (cached.expiresAt <= Date.now()) {
+                localRequestCache.delete(cacheKey);
+                return null;
+            }
+            return cloneValue(cached.data);
+        }
+
+        function setCachedPayload(cacheKey, data, ttl) {
+            if (!cacheKey || ttl <= 0) return;
+            localRequestCache.set(cacheKey, {
+                expiresAt: Date.now() + ttl,
+                data: cloneValue(data)
+            });
+        }
+
+        function extractApiMessage(payload, fallback = '请求失败，请稍后重试') {
+            if (!payload) return fallback;
+            if (payload.message) {
+                return payload.request_id ? `${payload.message}（请求编号 ${payload.request_id}）` : payload.message;
+            }
+            if (typeof payload.detail === 'string') {
+                return payload.request_id ? `${payload.detail}（请求编号 ${payload.request_id}）` : payload.detail;
+            }
+            return fallback;
+        }
+
+        function setStatusMessage(elementId, message, type = 'info') {
+            const el = document.getElementById(elementId);
+            if (!el) return;
+            if (!message) {
+                el.className = 'inline-status hidden';
+                el.textContent = '';
+                return;
+            }
+            el.className = `inline-status ${type}`;
+            el.textContent = message;
+        }
+
+        function setButtonBusy(buttonId, busy, busyText) {
+            const btn = document.getElementById(buttonId);
+            if (!btn) return;
+            if (!btn.dataset.defaultText) {
+                btn.dataset.defaultText = btn.textContent;
+            }
+            btn.disabled = Boolean(busy);
+            btn.textContent = busy ? busyText : btn.dataset.defaultText;
+        }
+
+        function setProgressValue(name, percent, visible = true) {
+            const target = PROGRESS_BARS[name];
+            if (!target) return;
+            const wrapper = document.getElementById(target.wrapper);
+            const fill = document.getElementById(target.fill);
+            if (!wrapper || !fill) return;
+            wrapper.classList.toggle('hidden', !visible);
+            fill.style.width = `${Math.max(0, Math.min(100, percent))}%`;
+        }
+
+        function startProgress(name, start = 16) {
+            stopProgress(name, false);
+            setProgressValue(name, start, true);
+            progressTimers[name] = window.setInterval(() => {
+                const target = PROGRESS_BARS[name];
+                if (!target) return;
+                const fill = document.getElementById(target.fill);
+                if (!fill) return;
+                const current = parseFloat(fill.style.width || '0');
+                const next = current < 55 ? current + 11 : current < 80 ? current + 5 : current + 2;
+                fill.style.width = `${Math.min(90, next)}%`;
+            }, 180);
+        }
+
+        function stopProgress(name, complete = true) {
+            if (progressTimers[name]) {
+                window.clearInterval(progressTimers[name]);
+                delete progressTimers[name];
+            }
+            const target = PROGRESS_BARS[name];
+            if (!target) return;
+            if (!complete) {
+                setProgressValue(name, 0, false);
+                return;
+            }
+            setProgressValue(name, 100, true);
+            window.setTimeout(() => setProgressValue(name, 0, false), 320);
+        }
+
+        function abortPendingRequest(requestName) {
+            const controller = pendingControllers.get(requestName);
+            if (controller) {
+                controller.abort();
+                pendingControllers.delete(requestName);
+            }
+        }
+
+        async function apiRequest(path, { method = 'GET', body = null, cacheKey = null, cacheTtl = 0, requestName = null, timeout = API_TIMEOUT } = {}) {
+            if (cacheKey && cacheTtl > 0) {
+                const cached = getCachedPayload(cacheKey);
+                if (cached) return cached;
+            }
+
+            if (requestName) {
+                abortPendingRequest(requestName);
+            }
+
+            const controller = new AbortController();
+            let timedOut = false;
+            if (requestName) {
+                pendingControllers.set(requestName, controller);
+            }
+            const timeoutId = window.setTimeout(() => {
+                timedOut = true;
+                controller.abort();
+            }, timeout);
+
+            try {
+                const res = await fetch(path, {
+                    method,
+                    headers: body ? { 'Content-Type': 'application/json' } : {},
+                    body: body ? JSON.stringify(body) : undefined,
+                    signal: controller.signal
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) {
+                    throw new Error(extractApiMessage(data, `请求失败（${res.status}）`));
+                }
+                if (cacheKey && cacheTtl > 0 && data && data.success !== false) {
+                    setCachedPayload(cacheKey, data, cacheTtl);
+                }
+                return data;
+            } catch (error) {
+                if (timedOut) {
+                    throw new Error('请求超时，请稍后重试');
+                }
+                if (error && error.name === 'AbortError') {
+                    throw new Error('已取消过期请求');
+                }
+                throw error;
+            } finally {
+                window.clearTimeout(timeoutId);
+                if (requestName && pendingControllers.get(requestName) === controller) {
+                    pendingControllers.delete(requestName);
+                }
+            }
+        }
+
+        function showLoadingResult(message) {
+            document.getElementById('resultContent').innerHTML = `
+                <div class="result-error">
+                    <div class="icon">⏳</div>
+                    <div style="font-size: 18px; margin-bottom: 10px;">正在处理中</div>
+                    <div style="color: #94a3b8; font-size: 14px;">${message}</div>
+                </div>
+            `;
+            document.getElementById('resultCard').classList.add('show');
+        }
+
+        function invalidateQuerySteps() {
+            document.getElementById('rangeCard').style.display = 'none';
+            document.getElementById('queryCard').style.display = 'none';
+            document.getElementById('resultCard').classList.remove('show');
+            setStatusMessage('rangeStatus', '');
+            setStatusMessage('queryStatus', '');
+            stopProgress('query', false);
+        }
 
         function renderComponentButtons() {
             const container = document.getElementById('componentButtons');
@@ -959,16 +1234,16 @@
                 const btn = document.createElement('button');
                 btn.className = 'comp-btn';
                 btn.dataset.comp = key;
-                
+
                 const isSelected = selectedComponents.includes(key);
                 const isAvailable = availableComponents.includes(key);
-                
+
                 if (isSelected) btn.classList.add('selected');
                 if (!isAvailable && !isSelected) btn.classList.add('disabled');
-                
+
                 btn.innerHTML = `${comp.name} <span class="formula">${comp.formula}</span>`;
                 btn.onclick = () => toggleComponent(key);
-                
+
                 container.appendChild(btn);
             });
 
@@ -999,7 +1274,19 @@
 
         function updateConfirmButton() {
             const btn = document.getElementById('confirmBtn');
+            if (!btn) return;
             btn.disabled = selectedComponents.length === 0;
+        }
+
+        function scheduleAvailableComponentsRefresh() {
+            if (availableRefreshTimer) {
+                window.clearTimeout(availableRefreshTimer);
+            }
+            availableRefreshTimer = window.setTimeout(() => {
+                updateAvailableComponents().catch(error => {
+                    setStatusMessage('selectionStatus', error.message || '刷新可选组分失败，请稍后重试。', 'error');
+                });
+            }, 180);
         }
 
         async function toggleComponent(key) {
@@ -1010,68 +1297,86 @@
             if (!availableComponents.includes(key)) return;
 
             selectedComponents.push(key);
-            await updateAvailableComponents();
             renderComponentButtons();
-            
-            // 隐藏区间显示（需要重新确认）
-            document.getElementById('rangeCard').style.display = 'none';
-            document.getElementById('queryCard').style.display = 'none';
+            invalidateQuerySteps();
+            setStatusMessage('selectionStatus', '正在刷新可选组分...', 'info');
+            scheduleAvailableComponentsRefresh();
         }
 
         async function removeComponent(key) {
             selectedComponents = selectedComponents.filter(k => k !== key);
-            await updateAvailableComponents();
             renderComponentButtons();
-            
-            // 隐藏区间显示
-            document.getElementById('rangeCard').style.display = 'none';
-            document.getElementById('queryCard').style.display = 'none';
+            invalidateQuerySteps();
+            if (selectedComponents.length === 0) {
+                availableComponents = Object.keys(COMPONENTS);
+                renderComponentButtons();
+                setStatusMessage('selectionStatus', '已清空组分限制，可重新选择任意组分。', 'info');
+                return;
+            }
+            setStatusMessage('selectionStatus', '正在刷新可选组分...', 'info');
+            scheduleAvailableComponentsRefresh();
         }
 
         async function updateAvailableComponents() {
             if (selectedComponents.length === 0) {
                 availableComponents = Object.keys(COMPONENTS);
+                renderComponentButtons();
                 return;
             }
 
-            try {
-                const res = await fetch(`${API_BASE}/components/available`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ selected: selectedComponents })
-                });
-                const data = await res.json();
-                if (data.success) {
-                    availableComponents = data.available;
-                }
-            } catch (e) {
-                console.error(e);
+            const selected = [...selectedComponents].sort();
+            const cacheKey = makeCacheKey('available', selected);
+            const data = await apiRequest(`${API_BASE}/components/available`, {
+                method: 'POST',
+                body: { selected },
+                cacheKey,
+                cacheTtl: CLIENT_CACHE_TTL.available,
+                requestName: 'available-components',
+                timeout: 8000
+            });
+            if (data.success) {
+                availableComponents = Array.isArray(data.available) ? data.available : [];
+                renderComponentButtons();
+                setStatusMessage('selectionStatus', `已刷新可选组分，当前可匹配记录 ${data.match_count ?? 0} 条。`, 'success');
+                return;
             }
+            throw new Error(data.message || '暂时无法刷新可选组分');
         }
 
         async function confirmComponents() {
             if (selectedComponents.length === 0) return;
 
+            setButtonBusy('confirmBtn', true, '正在分析组合...');
+            setStatusMessage('rangeStatus', '正在加载数据库中的组分区间与温度范围...', 'info');
+
             try {
-                // 调用API获取组分区间
-                const res = await fetch(`${API_BASE}/components/ranges`, {
+                const components = [...selectedComponents].sort();
+                const cacheKey = makeCacheKey('ranges', components);
+                const data = await apiRequest(`${API_BASE}/components/ranges`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ components: selectedComponents })
+                    body: { components },
+                    cacheKey,
+                    cacheTtl: CLIENT_CACHE_TTL.ranges,
+                    requestName: 'component-ranges'
                 });
-                const data = await res.json();
-                
+
                 if (data.success) {
-                    componentRanges = data.ranges;
+                    componentRanges = data.ranges || {};
                     displayRanges(data);
                     document.getElementById('rangeCard').style.display = 'block';
                     document.getElementById('queryCard').style.display = data.total_records > 0 ? 'block' : 'none';
+                    if (data.total_records > 0) {
+                        setStatusMessage('rangeStatus', `已加载 ${data.total_records} 条匹配记录，可继续输入温度查询。`, 'success');
+                    } else {
+                        setStatusMessage('rangeStatus', '当前组分组合没有匹配记录，请返回上一步调整组分。', 'warn');
+                    }
                 } else {
-                    alert('查询失败：' + data.message);
+                    setStatusMessage('rangeStatus', data.message || '暂时无法加载组分区间。', 'error');
                 }
-            } catch (e) {
-                console.error(e);
-                alert('网络错误，请稍后重试');
+            } catch (error) {
+                setStatusMessage('rangeStatus', error.message || '网络异常，请稍后重试。', 'error');
+            } finally {
+                setButtonBusy('confirmBtn', false);
             }
         }
 
@@ -1081,11 +1386,11 @@
 
             selectedComponents.forEach(key => {
                 const comp = COMPONENTS[key];
-                const range = data.ranges[key];
-                
+                const range = data.ranges ? data.ranges[key] : null;
+
                 const item = document.createElement('div');
                 item.className = 'range-item';
-                
+
                 if (range) {
                     item.innerHTML = `
                         <div class="comp-name">
@@ -1105,11 +1410,10 @@
                         <div class="range-value no-data">无数据</div>
                     `;
                 }
-                
+
                 rangeContainer.appendChild(item);
             });
 
-            // 显示统计
             const statsContainer = document.getElementById('matchStats');
             statsContainer.innerHTML = `
                 <div class="stat-item">
@@ -1127,64 +1431,87 @@
             const temperature = parseFloat(document.getElementById('temperature').value);
 
             if (!temperature || temperature < 100 || temperature > 400) {
+                setStatusMessage('queryStatus', '请输入有效的温度（100-400 K）。', 'error');
                 showError('请输入有效的温度（100-400 K）');
                 return;
             }
 
+            setButtonBusy('queryBtn', true, '正在匹配实验数据...');
+            setStatusMessage('queryStatus', '正在匹配最接近的实验数据，请稍候...', 'info');
+            startProgress('query');
+            showLoadingResult('正在查询相平衡压力并计算最接近的实验点。');
+
             try {
-                const res = await fetch(`${API_BASE}/query/by-components`, {
+                const normalizedTemp = normalizeNumber(temperature, 3);
+                const cacheKey = makeCacheKey('query', {
+                    components: [...selectedComponents].sort(),
+                    temperature: normalizedTemp
+                });
+                const data = await apiRequest(`${API_BASE}/query/by-components`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        components: selectedComponents,
-                        temperature: temperature
-                    })
+                    body: {
+                        components: [...selectedComponents],
+                        temperature: normalizedTemp
+                    },
+                    cacheKey,
+                    cacheTtl: CLIENT_CACHE_TTL.query,
+                    requestName: 'single-query'
                 });
 
-                const data = await res.json();
-                
                 if (data.success && data.data) {
                     lastQueryResult = {
-                        temperature,
+                        temperature: normalizedTemp,
                         result: data.data,
                         components: [...selectedComponents],
                         createdAt: new Date().toISOString()
                     };
-                    showResult(data.data, temperature);
+                    showResult(data.data, normalizedTemp);
+                    setStatusMessage(
+                        'queryStatus',
+                        `查询完成，匹配温差 ${Math.abs((data.data.temperature || 0) - normalizedTemp).toFixed(2)} K。`,
+                        'success'
+                    );
+                    stopProgress('query', true);
                     addHistoryEntry({
                         id: generateId('single'),
                         type: 'single',
                         status: 'success',
-                        temperature,
+                        temperature: normalizedTemp,
                         components: [...selectedComponents],
                         result: data.data,
                         createdAt: new Date().toISOString()
                     });
                 } else {
+                    stopProgress('query', false);
+                    setStatusMessage('queryStatus', data.message || '当前条件下未找到匹配数据。', 'warn');
                     showNoData(data.message);
                     lastQueryResult = null;
                     addHistoryEntry({
                         id: generateId('single'),
                         type: 'single',
                         status: 'no-data',
-                        temperature,
+                        temperature: normalizedTemp,
                         components: [...selectedComponents],
                         message: data.message || '未找到匹配数据',
                         createdAt: new Date().toISOString()
                     });
                 }
             } catch (error) {
-                showError('查询失败，请稍后重试');
+                stopProgress('query', false);
+                setStatusMessage('queryStatus', error.message || '查询失败，请稍后重试。', 'error');
+                showError(error.message || '查询失败，请稍后重试');
                 lastQueryResult = null;
                 addHistoryEntry({
                     id: generateId('single'),
                     type: 'single',
                     status: 'error',
-                    temperature,
+                    temperature: normalizeNumber(temperature, 3),
                     components: [...selectedComponents],
                     message: error.message || '查询失败',
                     createdAt: new Date().toISOString()
                 });
+            } finally {
+                setButtonBusy('queryBtn', false);
             }
         }
 
@@ -1577,7 +1904,7 @@
             const values = [];
             const seen = new Set();
             for (const item of parts) {
-                const value = parseFloat(item);
+                const value = normalizeNumber(parseFloat(item), 3);
                 if (!Number.isFinite(value)) continue;
                 const key = value.toString();
                 if (seen.has(key)) continue;
@@ -1592,6 +1919,7 @@
             if (textarea) textarea.value = '';
             document.getElementById('batchResults').innerHTML = '';
             document.getElementById('batchSummary').style.display = 'none';
+            stopProgress('batch', false);
             setBatchStatus('已清空批量输入', 'success');
             lastBatchResult = null;
         }
@@ -1604,6 +1932,8 @@
                 status.style.color = '#fecaca';
             } else if (type === 'success') {
                 status.style.color = '#86efac';
+            } else if (type === 'warn') {
+                status.style.color = '#fdba74';
             } else {
                 status.style.color = '#94a3b8';
             }
@@ -1626,25 +1956,28 @@
                 return;
             }
 
-            const btn = document.getElementById('batchQueryBtn');
-            if (btn) {
-                btn.disabled = true;
-                btn.textContent = '查询中...';
-            }
+            setButtonBusy('batchQueryBtn', true, '批量查询中...');
             setBatchStatus(`批量查询中（${temps.length} 条）...`);
+            startProgress('batch');
 
             let results = [];
             try {
-                const res = await fetch(`${API_BASE}/query/batch`, {
+                const cacheKey = makeCacheKey('batch', {
+                    components: [...selectedComponents].sort(),
+                    temperatures: temps
+                });
+                const data = await apiRequest(`${API_BASE}/query/batch`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
+                    body: {
                         components: selectedComponents,
                         temperatures: temps
-                    })
+                    },
+                    cacheKey,
+                    cacheTtl: CLIENT_CACHE_TTL.batch,
+                    requestName: 'batch-query',
+                    timeout: 20000
                 });
-                const data = await res.json();
-                if (!res.ok || !data.success) {
+                if (!data.success) {
                     throw new Error(data.message || '批量查询失败');
                 }
                 const rawResults = (data.data && Array.isArray(data.data.results)) ? data.data.results : [];
@@ -1656,14 +1989,13 @@
                     matchedTemperature: item.matched_temperature ?? item.matchedTemperature ?? null,
                     message: item.message || ''
                 }));
+                stopProgress('batch', true);
             } catch (error) {
+                stopProgress('batch', false);
                 setBatchStatus(`批量查询失败: ${error.message}`, 'error');
                 return;
             } finally {
-                if (btn) {
-                    btn.disabled = false;
-                    btn.textContent = '🚀 批量查询';
-                }
+                setButtonBusy('batchQueryBtn', false);
             }
 
             const summary = computeBatchSummary(results);
@@ -1815,7 +2147,42 @@
         }
 
         // ==================== PDF 导出 ====================
-        function getPdfDoc() {
+        function loadExternalScript(src) {
+            return new Promise((resolve, reject) => {
+                const existing = document.querySelector(`script[data-src="${src}"]`);
+                if (existing) {
+                    existing.addEventListener('load', () => resolve(), { once: true });
+                    existing.addEventListener('error', () => reject(new Error(`脚本加载失败: ${src}`)), { once: true });
+                    if (existing.dataset.loaded === 'true') {
+                        resolve();
+                    }
+                    return;
+                }
+                const script = document.createElement('script');
+                script.src = src;
+                script.async = true;
+                script.dataset.src = src;
+                script.addEventListener('load', () => {
+                    script.dataset.loaded = 'true';
+                    resolve();
+                }, { once: true });
+                script.addEventListener('error', () => reject(new Error(`脚本加载失败: ${src}`)), { once: true });
+                document.head.appendChild(script);
+            });
+        }
+
+        async function ensurePdfLib() {
+            if (window.jspdf && window.jspdf.jsPDF) {
+                return;
+            }
+            if (!pdfLibPromise) {
+                pdfLibPromise = loadExternalScript('https://cdn.jsdelivr.net/npm/jspdf@latest/dist/jspdf.umd.min.js');
+            }
+            await pdfLibPromise;
+        }
+
+        async function getPdfDoc() {
+            await ensurePdfLib();
             if (!window.jspdf || !window.jspdf.jsPDF) {
                 throw new Error('PDF 导出库未加载');
             }
@@ -1840,21 +2207,21 @@
             return parts.join(', ') || '--';
         }
 
-        function exportResultPdf() {
+        async function exportResultPdf() {
             if (!lastQueryResult || !lastQueryResult.result) {
                 setHistoryHint('没有可导出的查询结果', 'error');
                 return;
             }
-            exportSinglePdf(lastQueryResult, 'query-result.pdf');
+            await exportSinglePdf(lastQueryResult, 'query-result.pdf');
         }
 
-        function exportSinglePdfFromHistory(entryId) {
+        async function exportSinglePdfFromHistory(entryId) {
             const entry = queryHistory.find(item => item.id === entryId);
             if (!entry || entry.status !== 'success') {
                 setHistoryHint('历史记录无法导出', 'error');
                 return;
             }
-            exportSinglePdf({
+            await exportSinglePdf({
                 temperature: entry.temperature,
                 components: entry.components,
                 result: entry.result,
@@ -1862,13 +2229,13 @@
             }, 'query-result-history.pdf');
         }
 
-        function exportFavoritePdf(entryId) {
+        async function exportFavoritePdf(entryId) {
             const entry = favorites.find(item => item.id === entryId);
             if (!entry || !entry.result) {
                 setHistoryHint('收藏记录无法导出', 'error');
                 return;
             }
-            exportSinglePdf({
+            await exportSinglePdf({
                 temperature: entry.temperature,
                 components: entry.components,
                 result: entry.result,
@@ -1876,9 +2243,9 @@
             }, 'query-favorite.pdf');
         }
 
-        function exportSinglePdf(payload, filename) {
+        async function exportSinglePdf(payload, filename) {
             try {
-                const doc = getPdfDoc();
+                const doc = await getPdfDoc();
                 let y = 48;
                 doc.setFontSize(16);
                 doc.text('Gas Hydrate Query Result', 40, y);
@@ -1902,21 +2269,21 @@
             }
         }
 
-        function exportBatchPdf() {
+        async function exportBatchPdf() {
             if (!lastBatchResult || !lastBatchResult.results) {
                 setBatchStatus('没有可导出的批量结果', 'error');
                 return;
             }
-            exportBatchPdfPayload(lastBatchResult, 'batch-query.pdf');
+            await exportBatchPdfPayload(lastBatchResult, 'batch-query.pdf');
         }
 
-        function exportBatchPdfFromHistory(entryId) {
+        async function exportBatchPdfFromHistory(entryId) {
             const entry = queryHistory.find(item => item.id === entryId);
             if (!entry || entry.type !== 'batch') {
                 setHistoryHint('批量记录无法导出', 'error');
                 return;
             }
-            exportBatchPdfPayload({
+            await exportBatchPdfPayload({
                 components: entry.components,
                 results: entry.batch ? entry.batch.results : [],
                 summary: entry.batch ? entry.batch.summary : computeBatchSummary(entry.batch ? entry.batch.results : []),
@@ -1924,9 +2291,9 @@
             }, 'batch-query-history.pdf');
         }
 
-        function exportBatchPdfPayload(payload, filename) {
+        async function exportBatchPdfPayload(payload, filename) {
             try {
-                const doc = getPdfDoc();
+                const doc = await getPdfDoc();
                 let y = 48;
                 doc.setFontSize(16);
                 doc.text('Batch Query Results', 40, y);
@@ -1982,6 +2349,6 @@
     </script>
 
     <!-- 数据可视化模块 -->
-    <script src="js/charts.js"></script>
+    <script defer src="js/charts.js"></script>
 </body>
 </html>

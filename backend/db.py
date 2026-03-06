@@ -177,7 +177,11 @@ def _connect_mysql(url: str, dict_cursor: bool) -> _ConnectionProxy:
 
 
 def _connect_sqlite(path: str, dict_cursor: bool) -> _ConnectionProxy:
-    conn = sqlite3.connect(path)
+    conn = sqlite3.connect(path, timeout=10, check_same_thread=False)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA temp_store=MEMORY")
+    conn.execute("PRAGMA foreign_keys=ON")
     if dict_cursor:
         conn.row_factory = sqlite3.Row
     return _ConnectionProxy(conn, "sqlite")
