@@ -304,15 +304,36 @@ def get_chart_data(chart_type: str) -> Dict:
             }
             
         elif chart_type == 'scatter':
-            # 温度-压力散点图数据（采样）
-            random_func = "RAND()" if is_mysql() else "RANDOM()"
-            cursor.execute(f'''
-                SELECT temperature, pressure
-                FROM gas_mixture
-                ORDER BY {random_func}
-                LIMIT 200
-            ''')
-            rows = cursor.fetchall()
+            # 温度-压力散点图数据（均匀采样，避免大表随机排序）
+            cursor.execute("SELECT COUNT(*) as count FROM gas_mixture")
+            row = cursor.fetchone()
+            total = row["count"] if row else 0
+            if total <= 200:
+                cursor.execute("""
+                    SELECT temperature, pressure
+                    FROM gas_mixture
+                    ORDER BY id ASC
+                    LIMIT 200
+                """)
+                rows = cursor.fetchall()
+            else:
+                step = max(1, total // 200)
+                cursor.execute("""
+                    SELECT temperature, pressure
+                    FROM gas_mixture
+                    WHERE (id % ?) = 0
+                    ORDER BY id ASC
+                    LIMIT 200
+                """, (step,))
+                rows = cursor.fetchall()
+                if len(rows) < 100:
+                    cursor.execute("""
+                        SELECT temperature, pressure
+                        FROM gas_mixture
+                        ORDER BY id DESC
+                        LIMIT 200
+                    """)
+                    rows = list(reversed(cursor.fetchall()))
             return {
                 'data': [{'x': r['temperature'], 'y': r['pressure']} for r in rows],
                 'title': '温度-压力分布'

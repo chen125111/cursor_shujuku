@@ -3,12 +3,14 @@ Redis缓存模块
 为数据库查询和API响应提供缓存功能
 """
 
+import fnmatch
 import hashlib
 import inspect
 import json
 import logging
 import os
 import pickle
+import threading
 import time
 from functools import wraps
 from typing import Any, Callable, Optional
@@ -57,6 +59,89 @@ class RedisCache:
         self.default_ttl = default_ttl
         self._client = None
         self._connected = False
+        self._memory_enabled = _env_flag("MEMORY_CACHE_ENABLED", True)
+        self._memory_max_entries = max(100, int(os.getenv("MEMORY_CACHE_MAX_ENTRIES", "2000")))
+        self._memory_store: dict[str, tuple[Optional[float], Any]] = {}
+        self._memory_lock = threading.Lock()
+        self._stats = {
+            "memory_hits": 0,
+            "memory_misses": 0,
+            "redis_hits": 0,
+            "redis_misses": 0,
+            "sets": 0,
+            "deletes": 0,
+        }
+
+    def _prune_memory_locked(self) -> None:
+        if not self._memory_enabled:
+            return
+        now = time.time()
+        expired = [key for key, (expires_at, _) in self._memory_store.items() if expires_at is not None and expires_at <= now]
+        for key in expired:
+            self._memory_store.pop(key, None)
+        if len(self._memory_store) <= self._memory_max_entries:
+            return
+        overflow = len(self._memory_store) - self._memory_max_entries
+        for key in list(self._memory_store.keys())[:overflow]:
+            self._memory_store.pop(key, None)
+
+    def _memory_set(self, key: str, value: Any, ttl: Optional[int]) -> bool:
+        if not self._memory_enabled:
+            return False
+        ttl = ttl if ttl is not None else self.default_ttl
+        expires_at = time.time() + ttl if ttl > 0 else None
+        with self._memory_lock:
+            self._prune_memory_locked()
+            self._memory_store[key] = (expires_at, value)
+        return True
+
+    def _memory_get(self, key: str, default: Any = None) -> Any:
+        if not self._memory_enabled:
+            self._stats["memory_misses"] += 1
+            return default
+        with self._memory_lock:
+            item = self._memory_store.get(key)
+            if item is None:
+                self._stats["memory_misses"] += 1
+                return default
+            expires_at, value = item
+            if expires_at is not None and expires_at <= time.time():
+                self._memory_store.pop(key, None)
+                self._stats["memory_misses"] += 1
+                return default
+            self._stats["memory_hits"] += 1
+            return value
+
+    def _memory_delete(self, key: str) -> bool:
+        if not self._memory_enabled:
+            return False
+        with self._memory_lock:
+            return self._memory_store.pop(key, None) is not None
+
+    def _memory_exists(self, key: str) -> bool:
+        marker = object()
+        return self._memory_get(key, default=marker) is not marker
+
+    def _memory_clear_pattern(self, pattern: str) -> int:
+        if not self._memory_enabled:
+            return 0
+        deleted = 0
+        with self._memory_lock:
+            self._prune_memory_locked()
+            for key in list(self._memory_store.keys()):
+                if fnmatch.fnmatch(key, pattern):
+                    self._memory_store.pop(key, None)
+                    deleted += 1
+        return deleted
+
+    def _memory_increment(self, key: str, amount: int = 1) -> int:
+        current = self._memory_get(key, default=0)
+        try:
+            next_value = int(current) + amount
+        except (TypeError, ValueError):
+            next_value = amount
+        self._memory_set(key, next_value, ttl=self.default_ttl)
+        return next_value
         
     def connect(self) -> bool:
         """连接Redis服务器"""
@@ -107,6 +192,10 @@ class RedisCache:
         except Exception:
             self._connected = False
             return False
+
+    def is_available(self) -> bool:
+        """缓存是否可用（Redis 或内存兜底）。"""
+        return _cache_enabled() and (self._memory_enabled or self.is_connected())
     
     def get_client(self) -> Optional[redis.Redis]:
         """获取Redis客户端实例"""
@@ -127,23 +216,23 @@ class RedisCache:
         Returns:
             是否设置成功
         """
+        ttl = ttl if ttl is not None else self.default_ttl
+        memory_ok = self._memory_set(key, value, ttl)
+        redis_ok = False
         client = self.get_client()
-        if not client:
-            return False
-        
-        try:
-            # 序列化值
-            if isinstance(value, (str, int, float, bool, bytes)):
-                serialized = value
-            else:
-                serialized = pickle.dumps(value)
-            
-            ttl = ttl if ttl is not None else self.default_ttl
-            result = client.setex(key, ttl, serialized)
-            return bool(result)
-        except Exception as e:
-            logger.error(f"设置缓存失败: {e}")
-            return False
+        if client:
+            try:
+                # 序列化值
+                if isinstance(value, (str, int, float, bool, bytes)):
+                    serialized = value
+                else:
+                    serialized = pickle.dumps(value)
+                redis_ok = bool(client.setex(key, ttl, serialized))
+            except Exception as e:
+                logger.error(f"设置缓存失败: {e}")
+        if memory_ok or redis_ok:
+            self._stats["sets"] += 1
+        return memory_ok or redis_ok
     
     def get(self, key: str, default: Any = None) -> Any:
         """
@@ -156,6 +245,11 @@ class RedisCache:
         Returns:
             缓存值或默认值
         """
+        marker = object()
+        memory_value = self._memory_get(key, default=marker)
+        if memory_value is not marker:
+            return memory_value
+
         client = self.get_client()
         if not client:
             return default
@@ -163,38 +257,45 @@ class RedisCache:
         try:
             value = client.get(key)
             if value is None:
+                self._stats["redis_misses"] += 1
                 return default
-            
+            self._stats["redis_hits"] += 1
+            decoded = None
             # 反序列化值
             try:
                 # 尝试JSON解码
-                return json.loads(value.decode('utf-8'))
+                decoded = json.loads(value.decode('utf-8'))
             except Exception:
                 try:
                     # 尝试pickle解码
-                    return pickle.loads(value)
+                    decoded = pickle.loads(value)
                 except Exception:
                     # 返回原始字节
-                    return value.decode('utf-8') if isinstance(value, bytes) else value
+                    decoded = value.decode('utf-8') if isinstance(value, bytes) else value
+            self._memory_set(key, decoded, self.default_ttl)
+            return decoded
         except Exception as e:
             logger.error(f"获取缓存失败: {e}")
             return default
     
     def delete(self, key: str) -> bool:
         """删除缓存"""
+        memory_deleted = self._memory_delete(key)
+        redis_deleted = False
         client = self.get_client()
-        if not client:
-            return False
-        
-        try:
-            result = client.delete(key)
-            return bool(result)
-        except Exception as e:
-            logger.error(f"删除缓存失败: {e}")
-            return False
+        if client:
+            try:
+                redis_deleted = bool(client.delete(key))
+            except Exception as e:
+                logger.error(f"删除缓存失败: {e}")
+        if memory_deleted or redis_deleted:
+            self._stats["deletes"] += 1
+        return memory_deleted or redis_deleted
     
     def exists(self, key: str) -> bool:
         """检查缓存是否存在"""
+        if self._memory_exists(key):
+            return True
         client = self.get_client()
         if not client:
             return False
@@ -215,12 +316,12 @@ class RedisCache:
         Returns:
             删除的键数量
         """
+        deleted = self._memory_clear_pattern(pattern)
         client = self.get_client()
         if not client:
-            return 0
+            return deleted
         
         try:
-            deleted = 0
             batch: list[bytes] = []
             for key in client.scan_iter(match=pattern, count=1000):
                 batch.append(key)
@@ -232,40 +333,77 @@ class RedisCache:
             return deleted
         except Exception as e:
             logger.error(f"清除模式缓存失败: {e}")
-            return 0
+            return deleted
     
     def increment(self, key: str, amount: int = 1) -> Optional[int]:
         """递增计数器"""
+        memory_value = self._memory_increment(key, amount)
         client = self.get_client()
         if not client:
-            return None
+            return memory_value
         
         try:
-            return client.incrby(key, amount)
+            redis_value = client.incrby(key, amount)
+            self._memory_set(key, redis_value, ttl=self.default_ttl)
+            return redis_value
         except Exception as e:
             logger.error(f"递增计数器失败: {e}")
-            return None
+            return memory_value
     
     def get_stats(self) -> dict:
         """获取缓存统计信息"""
+        memory_stats = {
+            "enabled": self._memory_enabled and _cache_enabled(),
+            "entries": 0,
+            "hits": self._stats["memory_hits"],
+            "misses": self._stats["memory_misses"],
+        }
+        if self._memory_enabled:
+            with self._memory_lock:
+                self._prune_memory_locked()
+                memory_stats["entries"] = len(self._memory_store)
+
         client = self.get_client()
         if not client:
-            return {"connected": False}
+            total_hits = self._stats["memory_hits"]
+            total_misses = self._stats["memory_misses"]
+            return {
+                "connected": False,
+                "available": self.is_available(),
+                "backend": "memory" if memory_stats["enabled"] else "disabled",
+                "memory": memory_stats,
+                "sets": self._stats["sets"],
+                "deletes": self._stats["deletes"],
+                "hit_rate": total_hits / max(1, total_hits + total_misses),
+            }
         
         try:
             info = client.info()
+            total_hits = self._stats["memory_hits"] + info.get('keyspace_hits', 0)
+            total_misses = self._stats["memory_misses"] + info.get('keyspace_misses', 0)
             return {
                 "connected": True,
+                "available": self.is_available(),
+                "backend": "redis+memory" if memory_stats["enabled"] else "redis",
                 "used_memory": info.get('used_memory_human', 'N/A'),
                 "connected_clients": info.get('connected_clients', 0),
                 "total_commands_processed": info.get('total_commands_processed', 0),
                 "keyspace_hits": info.get('keyspace_hits', 0),
                 "keyspace_misses": info.get('keyspace_misses', 0),
-                "hit_rate": info.get('keyspace_hits', 0) / max(1, info.get('keyspace_hits', 0) + info.get('keyspace_misses', 0))
+                "memory": memory_stats,
+                "sets": self._stats["sets"],
+                "deletes": self._stats["deletes"],
+                "hit_rate": total_hits / max(1, total_hits + total_misses),
             }
         except Exception as e:
             logger.error(f"获取缓存统计失败: {e}")
-            return {"connected": False, "error": str(e)}
+            return {
+                "connected": False,
+                "available": self.is_available(),
+                "backend": "memory" if memory_stats["enabled"] else "disabled",
+                "memory": memory_stats,
+                "error": str(e),
+            }
 
 
 def cache_key_generator(*args, **kwargs) -> str:
@@ -311,7 +449,7 @@ def cached(ttl: int = 300, key_prefix: str = "func"):
             @wraps(func)
             async def async_wrapper(*args, **kwargs):
                 cache = get_cache()
-                if not cache or not cache.is_connected():
+                if not cache or not cache.is_available():
                     return await func(*args, **kwargs)
 
                 cache_key = _build_key(args, kwargs)
@@ -330,7 +468,7 @@ def cached(ttl: int = 300, key_prefix: str = "func"):
         @wraps(func)
         def sync_wrapper(*args, **kwargs):
             cache = get_cache()
-            if not cache or not cache.is_connected():
+            if not cache or not cache.is_available():
                 return func(*args, **kwargs)
 
             cache_key = _build_key(args, kwargs)
@@ -361,7 +499,7 @@ def invalidate_cache(pattern: str = None):
     def decorator(func: Callable):
         def _invalidate() -> None:
             cache = get_cache()
-            if cache and cache.is_connected():
+            if cache and cache.is_available():
                 if pattern:
                     cache.clear_pattern(pattern)
                 else:
@@ -427,7 +565,7 @@ def get_cache() -> Optional[RedisCache]:
 def clear_cache() -> bool:
     """清除所有缓存"""
     cache = get_cache()
-    if cache and cache.is_connected():
+    if cache and cache.is_available():
         return cache.clear_pattern("cache:*") > 0
     return False
 

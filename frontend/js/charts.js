@@ -3,9 +3,57 @@
  * 使用 Chart.js 创建交互式图表
  */
 
+const CHART_JS_CDN = 'https://cdn.jsdelivr.net/npm/chart.js';
+let chartLibraryPromise = null;
+
+function loadScriptOnce(src) {
+    return new Promise((resolve, reject) => {
+        const existing = document.querySelector(`script[data-src="${src}"]`);
+        if (existing) {
+            if (existing.dataset.loaded === 'true') {
+                resolve();
+                return;
+            }
+            existing.addEventListener('load', () => resolve(), { once: true });
+            existing.addEventListener('error', () => reject(new Error(`脚本加载失败: ${src}`)), { once: true });
+            return;
+        }
+
+        const script = document.createElement('script');
+        script.src = src;
+        script.async = true;
+        script.dataset.src = src;
+        script.addEventListener('load', () => {
+            script.dataset.loaded = 'true';
+            resolve();
+        }, { once: true });
+        script.addEventListener('error', () => reject(new Error(`脚本加载失败: ${src}`)), { once: true });
+        document.head.appendChild(script);
+    });
+}
+
+async function ensureChartJs() {
+    if (typeof Chart !== 'undefined') {
+        return;
+    }
+    if (!chartLibraryPromise) {
+        chartLibraryPromise = loadScriptOnce(CHART_JS_CDN);
+    }
+    await chartLibraryPromise;
+}
+
+function updateChartsStatus(message, type = 'info') {
+    const el = document.getElementById('chartsStatus');
+    if (!el) return;
+    el.className = `inline-status ${type}`;
+    el.textContent = message;
+}
+
 class GasCharts {
     constructor() {
         this.charts = {};
+        this.initialized = false;
+        this.statsInterval = null;
         this.colors = {
             blue: 'rgba(61, 158, 255, 0.8)',
             cyan: 'rgba(0, 212, 170, 0.8)',
@@ -63,7 +111,17 @@ class GasCharts {
     /**
      * 初始化所有图表
      */
-    init() {
+    async init() {
+        if (this.initialized) {
+            if (!document.hidden) {
+                this.updateStatsCards();
+            }
+            return;
+        }
+
+        updateChartsStatus('正在加载图表库和统计数据...', 'info');
+        await ensureChartJs();
+        this.initialized = true;
         this.initTemperatureDistribution();
         this.initPressureDistribution();
         this.initTemperaturePressureScatter();
@@ -76,6 +134,14 @@ class GasCharts {
                 if (chart) chart.resize();
             });
         });
+
+        document.addEventListener('visibilitychange', () => {
+            if (!document.hidden && this.initialized) {
+                this.updateStatsCards();
+            }
+        });
+
+        updateChartsStatus('图表已按需加载完成，可随时刷新查看最新统计。', 'success');
     }
     
     /**
@@ -369,9 +435,22 @@ class GasCharts {
      */
     initStatsCards() {
         this.updateStatsCards();
-        
-        // 每30秒更新一次统计
-        setInterval(() => this.updateStatsCards(), 30000);
+
+        if (this.statsInterval) {
+            clearInterval(this.statsInterval);
+        }
+        this.statsInterval = setInterval(() => {
+            if (!document.hidden && this.isChartsVisible()) {
+                this.updateStatsCards();
+            }
+        }, 30000);
+    }
+
+    isChartsVisible() {
+        const card = document.getElementById('chartsCard');
+        if (!card) return true;
+        const rect = card.getBoundingClientRect();
+        return rect.bottom > 0 && rect.top < window.innerHeight + 120;
     }
     
     /**
@@ -548,16 +627,31 @@ class GasCharts {
 // 创建全局实例
 const gasCharts = new GasCharts();
 
-// 页面加载完成后初始化图表
+// 页面加载完成后按需初始化图表
 document.addEventListener('DOMContentLoaded', () => {
-    // 延迟初始化，确保DOM完全加载
-    setTimeout(() => {
-        if (typeof Chart !== 'undefined') {
-            gasCharts.init();
-        } else {
-            console.error('Chart.js 未加载');
+    const chartsCard = document.getElementById('chartsCard');
+    if (!chartsCard) return;
+
+    const initChartsWhenNeeded = async () => {
+        try {
+            await gasCharts.init();
+        } catch (error) {
+            console.error('图表初始化失败:', error);
+            updateChartsStatus('图表初始化失败，请稍后重试。', 'error');
         }
-    }, 100);
+    };
+
+    if ('IntersectionObserver' in window) {
+        const observer = new IntersectionObserver(entries => {
+            if (entries.some(entry => entry.isIntersecting)) {
+                initChartsWhenNeeded();
+                observer.disconnect();
+            }
+        }, { rootMargin: '200px 0px' });
+        observer.observe(chartsCard);
+    } else {
+        initChartsWhenNeeded();
+    }
 });
 
 // 导出供其他模块使用

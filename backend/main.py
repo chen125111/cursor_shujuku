@@ -8,13 +8,17 @@ from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Header, Dep
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse, Response, JSONResponse
-from typing import Optional, List
+from typing import Optional, List, Any
 from pydantic import BaseModel
+from bisect import bisect_left
 import logging
 import os
 import io
 import csv
 import json
+import threading
+import time
+import uuid
 
 from backend.models import (
     GasRecordCreate, GasRecordUpdate, GasRecord,
@@ -65,6 +69,159 @@ from backend.cache import cached, get_cache, init_cache
 
 
 logger = logging.getLogger(__name__)
+APP_STARTED_AT = time.time()
+SLOW_REQUEST_MS = float(os.getenv("SLOW_REQUEST_MS", "800"))
+SLOW_QUERY_MS = float(os.getenv("SLOW_QUERY_MS", "200"))
+QUERY_TEMPERATURE_WINDOW = 5.0
+PUBLIC_QUERY_CACHE_TTL = int(os.getenv("PUBLIC_QUERY_CACHE_TTL", "120"))
+PUBLIC_METADATA_CACHE_TTL = int(os.getenv("PUBLIC_METADATA_CACHE_TTL", "180"))
+PERFORMANCE_LOCK = threading.Lock()
+PERFORMANCE_METRICS = {
+    "total_requests": 0,
+    "total_errors": 0,
+    "total_duration_ms": 0.0,
+    "routes": {},
+    "slow_requests": [],
+    "slow_queries": [],
+    "queries": {},
+}
+
+
+def _append_recent(items: list[dict[str, Any]], item: dict[str, Any], limit: int = 30) -> None:
+    items.append(item)
+    if len(items) > limit:
+        del items[:-limit]
+
+
+def _get_request_id(request: Request) -> str:
+    return getattr(request.state, "request_id", "unknown")
+
+
+def _error_code_for_status(status_code: int) -> str:
+    mapping = {
+        400: "BAD_REQUEST",
+        401: "UNAUTHORIZED",
+        403: "FORBIDDEN",
+        404: "NOT_FOUND",
+        409: "CONFLICT",
+        422: "VALIDATION_ERROR",
+        429: "RATE_LIMITED",
+    }
+    return mapping.get(status_code, "INTERNAL_SERVER_ERROR" if status_code >= 500 else f"HTTP_{status_code}")
+
+
+def _build_error_content(
+    message: str,
+    error_code: str,
+    request_id: str,
+    *,
+    detail: Any = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "success": False,
+        "message": message,
+        "error_code": error_code,
+        "request_id": request_id,
+        "detail": detail if detail is not None else message,
+    }
+    return payload
+
+
+def _record_request_metric(method: str, path: str, status_code: int, duration_ms: float, request_id: str) -> None:
+    route_key = f"{method} {path}"
+    with PERFORMANCE_LOCK:
+        PERFORMANCE_METRICS["total_requests"] += 1
+        PERFORMANCE_METRICS["total_duration_ms"] += duration_ms
+        if status_code >= 400:
+            PERFORMANCE_METRICS["total_errors"] += 1
+
+        route_stats = PERFORMANCE_METRICS["routes"].setdefault(
+            route_key,
+            {
+                "count": 0,
+                "errors": 0,
+                "total_duration_ms": 0.0,
+                "max_duration_ms": 0.0,
+                "last_status_code": status_code,
+                "last_duration_ms": 0.0,
+            },
+        )
+        route_stats["count"] += 1
+        route_stats["total_duration_ms"] += duration_ms
+        route_stats["max_duration_ms"] = max(route_stats["max_duration_ms"], duration_ms)
+        route_stats["last_status_code"] = status_code
+        route_stats["last_duration_ms"] = duration_ms
+        if status_code >= 400:
+            route_stats["errors"] += 1
+
+        if duration_ms >= SLOW_REQUEST_MS:
+            _append_recent(
+                PERFORMANCE_METRICS["slow_requests"],
+                {
+                    "request_id": request_id,
+                    "method": method,
+                    "path": path,
+                    "status_code": status_code,
+                    "duration_ms": round(duration_ms, 2),
+                },
+            )
+
+
+def _record_query_metric(name: str, duration_ms: float, *, row_count: Optional[int] = None, context: Optional[dict[str, Any]] = None) -> None:
+    with PERFORMANCE_LOCK:
+        query_stats = PERFORMANCE_METRICS["queries"].setdefault(
+            name,
+            {"count": 0, "total_duration_ms": 0.0, "max_duration_ms": 0.0, "last_row_count": 0},
+        )
+        query_stats["count"] += 1
+        query_stats["total_duration_ms"] += duration_ms
+        query_stats["max_duration_ms"] = max(query_stats["max_duration_ms"], duration_ms)
+        if row_count is not None:
+            query_stats["last_row_count"] = row_count
+
+        if duration_ms >= SLOW_QUERY_MS:
+            entry = {
+                "name": name,
+                "duration_ms": round(duration_ms, 2),
+                "row_count": row_count,
+            }
+            if context:
+                entry["context"] = context
+            _append_recent(PERFORMANCE_METRICS["slow_queries"], entry)
+
+    if duration_ms >= SLOW_QUERY_MS:
+        logger.warning("慢查询 %s 耗时 %.2fms rows=%s context=%s", name, duration_ms, row_count, context or {})
+
+
+def _execute_fetchall(cursor, query: str, params: Optional[list[Any]] = None, *, label: str, context: Optional[dict[str, Any]] = None):
+    started_at = time.perf_counter()
+    cursor.execute(query, params or [])
+    rows = cursor.fetchall()
+    normalized_rows = [dict(row) if not isinstance(row, dict) else row for row in rows]
+    _record_query_metric(label, (time.perf_counter() - started_at) * 1000, row_count=len(rows), context=context)
+    return normalized_rows
+
+
+def _execute_fetchone(cursor, query: str, params: Optional[list[Any]] = None, *, label: str, context: Optional[dict[str, Any]] = None):
+    started_at = time.perf_counter()
+    cursor.execute(query, params or [])
+    row = cursor.fetchone()
+    _record_query_metric(label, (time.perf_counter() - started_at) * 1000, row_count=1 if row else 0, context=context)
+    if row and not isinstance(row, dict):
+        return dict(row)
+    return row
+
+
+def _finalize_response(response: Response, request: Request, duration_ms: float) -> Response:
+    request_id = _get_request_id(request)
+    response.headers["X-Request-ID"] = request_id
+    response.headers["X-Response-Time-Ms"] = f"{duration_ms:.2f}"
+    # 添加安全响应头
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 # ==================== 认证依赖 ====================
 
@@ -126,15 +283,45 @@ app = FastAPI(
 
 @app.exception_handler(RequestValidationError)
 async def request_validation_exception_handler(request: Request, exc: RequestValidationError):
-    # 保持 FastAPI 默认返回结构，但在此处集中记录
-    logger.info("请求参数校验失败 %s %s: %s", request.method, request.url.path, exc.errors())
-    return JSONResponse(status_code=422, content={"detail": exc.errors()})
+    request_id = _get_request_id(request)
+    logger.info("请求参数校验失败 %s %s [%s]: %s", request.method, request.url.path, request_id, exc.errors())
+    return JSONResponse(
+        status_code=422,
+        content=_build_error_content(
+            "提交的参数格式不正确，请检查温度、组分和输入类型。",
+            "VALIDATION_ERROR",
+            request_id,
+            detail=exc.errors(),
+        ),
+    )
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    request_id = _get_request_id(request)
+    detail = exc.detail
+    message = detail if isinstance(detail, str) else "请求未能成功处理"
+    if exc.status_code >= 500:
+        message = "服务暂时不可用，请稍后重试。"
+    logger.info("HTTP异常 %s %s [%s] status=%s detail=%s", request.method, request.url.path, request_id, exc.status_code, detail)
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=_build_error_content(message, _error_code_for_status(exc.status_code), request_id, detail=detail),
+    )
 
 
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
-    logger.exception("未处理异常 %s %s", request.method, request.url.path)
-    return JSONResponse(status_code=500, content={"detail": "服务器内部错误"})
+    request_id = _get_request_id(request)
+    logger.exception("未处理异常 %s %s [%s]", request.method, request.url.path, request_id)
+    return JSONResponse(
+        status_code=500,
+        content=_build_error_content(
+            "服务暂时不可用，请稍后重试；如问题持续存在，请联系管理员并提供请求编号。",
+            "INTERNAL_SERVER_ERROR",
+            request_id,
+        ),
+    )
 
 # 软提示（不阻止写入）
 def format_soft_warning(warnings: List[str]) -> str:
@@ -152,7 +339,7 @@ def format_soft_warning_count(count: int) -> str:
 def invalidate_read_caches() -> None:
     """写操作后失效统计/图表等读缓存（Redis不可用时自动降级为 no-op）。"""
     cache = get_cache()
-    if cache and cache.is_connected():
+    if cache and cache.is_available():
         cache.clear_pattern("cache:*")
 
 # 配置跨域 (CORS) - 允许前端访问
@@ -171,6 +358,8 @@ app.add_middleware(
 @app.middleware("http")
 async def security_middleware(request: Request, call_next):
     """安全中间件 - API限流 + 防爬虫"""
+    request.state.request_id = uuid.uuid4().hex[:12]
+    started_at = time.perf_counter()
     # 获取客户端信息
     client_ip = request.client.host if request.client else "unknown"
     user_agent = request.headers.get("user-agent", "")
@@ -184,31 +373,48 @@ async def security_middleware(request: Request, call_next):
         # 检查API限流
         allowed, error_msg = check_rate_limit(client_ip)
         if not allowed:
-            return Response(
-                content=json.dumps({"detail": error_msg, "error_code": "RATE_LIMITED"}),
+            response = JSONResponse(
                 status_code=429,
-                media_type="application/json"
+                content=_build_error_content(error_msg, "RATE_LIMITED", _get_request_id(request)),
             )
+            duration_ms = (time.perf_counter() - started_at) * 1000
+            _record_request_metric(request.method, path, response.status_code, duration_ms, _get_request_id(request))
+            return _finalize_response(response, request, duration_ms)
         
         # 检查爬虫
         is_crawler, crawler_reason = detect_crawler(user_agent, path, client_ip)
         if is_crawler:
             add_crawler_block(client_ip, crawler_reason)
-            return Response(
-                content=json.dumps({"detail": "访问被拒绝", "error_code": "BLOCKED"}),
+            response = JSONResponse(
                 status_code=403,
-                media_type="application/json"
+                content=_build_error_content("访问被拒绝", "BLOCKED", _get_request_id(request), detail=crawler_reason),
             )
-    
-    response = await call_next(request)
-    
-    # 添加安全响应头
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-Frame-Options"] = "DENY"
-    response.headers["X-XSS-Protection"] = "1; mode=block"
-    response.headers["Cache-Control"] = "no-store"
-    
-    return response
+            duration_ms = (time.perf_counter() - started_at) * 1000
+            _record_request_metric(request.method, path, response.status_code, duration_ms, _get_request_id(request))
+            return _finalize_response(response, request, duration_ms)
+
+    try:
+        response = await call_next(request)
+    except HTTPException as exc:
+        response = await http_exception_handler(request, exc)
+    except RequestValidationError as exc:
+        response = await request_validation_exception_handler(request, exc)
+    except Exception as exc:
+        response = await unhandled_exception_handler(request, exc)
+
+    duration_ms = (time.perf_counter() - started_at) * 1000
+    _record_request_metric(request.method, path, response.status_code, duration_ms, _get_request_id(request))
+    if path.startswith("/api/") and duration_ms >= SLOW_REQUEST_MS:
+        logger.warning(
+            "慢请求 %s %s [%s] status=%s duration=%.2fms",
+            request.method,
+            path,
+            _get_request_id(request),
+            response.status_code,
+            duration_ms,
+        )
+
+    return _finalize_response(response, request, duration_ms)
 
 # 前端静态文件目录 - 基于当前文件位置计算
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -467,7 +673,7 @@ async def api_chart_composition():
 async def api_cache_stats():
     """获取缓存统计信息"""
     cache = get_cache()
-    if cache and cache.is_connected():
+    if cache and cache.is_available():
         stats = cache.get_stats()
         return {
             "success": True,
@@ -492,7 +698,7 @@ async def api_clear_cache(user: dict = Depends(require_auth)):
         raise HTTPException(status_code=403, detail="权限不足")
     
     cache = get_cache()
-    if cache and cache.is_connected():
+    if cache and cache.is_available():
         cleared = cache.clear_pattern("cache:*")
         return {
             "success": True,
@@ -502,6 +708,64 @@ async def api_clear_cache(user: dict = Depends(require_auth)):
         "success": False,
         "message": "缓存未连接"
     }
+
+
+@app.get("/api/performance/summary", tags=["Performance"])
+async def api_performance_summary():
+    """返回最近请求与查询的性能概览。"""
+    cache = get_cache()
+    with PERFORMANCE_LOCK:
+        route_items = []
+        for route, stats in PERFORMANCE_METRICS["routes"].items():
+            avg_duration = stats["total_duration_ms"] / max(1, stats["count"])
+            route_items.append(
+                {
+                    "route": route,
+                    "count": stats["count"],
+                    "errors": stats["errors"],
+                    "avg_duration_ms": round(avg_duration, 2),
+                    "max_duration_ms": round(stats["max_duration_ms"], 2),
+                    "last_status_code": stats["last_status_code"],
+                    "last_duration_ms": round(stats["last_duration_ms"], 2),
+                }
+            )
+        route_items.sort(key=lambda item: (-item["avg_duration_ms"], item["route"]))
+
+        query_items = []
+        for name, stats in PERFORMANCE_METRICS["queries"].items():
+            avg_duration = stats["total_duration_ms"] / max(1, stats["count"])
+            query_items.append(
+                {
+                    "name": name,
+                    "count": stats["count"],
+                    "avg_duration_ms": round(avg_duration, 2),
+                    "max_duration_ms": round(stats["max_duration_ms"], 2),
+                    "last_row_count": stats["last_row_count"],
+                }
+            )
+        query_items.sort(key=lambda item: (-item["avg_duration_ms"], item["name"]))
+
+        total_requests = PERFORMANCE_METRICS["total_requests"]
+        avg_response_ms = PERFORMANCE_METRICS["total_duration_ms"] / max(1, total_requests)
+        payload = {
+            "success": True,
+            "data": {
+                "uptime_seconds": round(time.time() - APP_STARTED_AT, 2),
+                "slow_request_threshold_ms": SLOW_REQUEST_MS,
+                "slow_query_threshold_ms": SLOW_QUERY_MS,
+                "requests": {
+                    "total": total_requests,
+                    "errors": PERFORMANCE_METRICS["total_errors"],
+                    "avg_response_ms": round(avg_response_ms, 2),
+                },
+                "routes": route_items[:10],
+                "queries": query_items[:10],
+                "recent_slow_requests": list(PERFORMANCE_METRICS["slow_requests"]),
+                "recent_slow_queries": list(PERFORMANCE_METRICS["slow_queries"]),
+                "cache": cache.get_stats() if cache else {"available": False},
+            },
+        }
+    return payload
 
 
 # ==================== 查询API ====================
@@ -1811,17 +2075,378 @@ def _build_component_conditions(components: List[str]) -> str:
     return " AND ".join(conditions) if conditions else "1=1"
 
 
-def _query_by_components_with_cursor(cursor, components: List[str], temperature: float):
+def _normalize_float(value: float, digits: int = 4) -> float:
+    return round(float(value), digits)
+
+
+def _normalize_temperature(value: float) -> float:
+    return _normalize_float(value, 3)
+
+
+def _normalize_ranges_payload(components: List[str], ranges: dict) -> tuple[tuple[str, float, float], ...]:
+    return tuple(
+        (comp, _normalize_float(_get_range_pair(ranges, comp)[0]), _normalize_float(_get_range_pair(ranges, comp)[1]))
+        for comp in components
+    )
+
+
+def _normalize_hydrate_components(components: dict) -> tuple[tuple[str, float], ...]:
+    normalized: list[tuple[str, float]] = []
+    for comp in PUBLIC_COMPONENT_COLUMNS:
+        value = components.get(comp, 0) if isinstance(components, dict) else 0
+        try:
+            normalized.append((comp, _normalize_float(max(0.0, float(value or 0)), 4)))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail=f"组分 {comp} 的值必须为数字") from None
+    return tuple(normalized)
+
+
+def _pick_nearest_row(rows: list[dict[str, Any]], target_temperature: float) -> Optional[dict[str, Any]]:
+    if not rows:
+        return None
+    temperatures = [float(row["temperature"]) for row in rows]
+    index = bisect_left(temperatures, target_temperature)
+    candidates: list[dict[str, Any]] = []
+    if index < len(rows):
+        candidates.append(rows[index])
+    if index > 0:
+        candidates.append(rows[index - 1])
+
+    best_row = None
+    best_key = None
+    for row in candidates:
+        diff = abs(float(row["temperature"]) - target_temperature)
+        if diff > QUERY_TEMPERATURE_WINDOW:
+            continue
+        sort_key = (diff, float(row.get("pressure", 0)))
+        if best_key is None or sort_key < best_key:
+            best_key = sort_key
+            best_row = row
+    return best_row
+
+
+def _fetch_component_candidate_rows(cursor, components: List[str], min_temp: float, max_temp: float) -> list[dict[str, Any]]:
     where_clause = _build_component_conditions(components)
     query = f"""
         SELECT temperature, pressure, {', '.join(PUBLIC_COMPONENT_COLUMNS)}
         FROM gas_mixture
-        WHERE {where_clause} AND ABS(temperature - ?) <= 5
-        ORDER BY ABS(temperature - ?)
-        LIMIT 1
+        WHERE {where_clause} AND temperature BETWEEN ? AND ?
+        ORDER BY temperature ASC, pressure ASC
     """
-    cursor.execute(query, [temperature, temperature])
-    return cursor.fetchone()
+    return _execute_fetchall(
+        cursor,
+        query,
+        [_normalize_temperature(min_temp), _normalize_temperature(max_temp)],
+        label="public_query_by_components_candidates",
+        context={"components": ",".join(components), "temp_min": round(min_temp, 3), "temp_max": round(max_temp, 3)},
+    )
+
+
+def _build_hydrate_response(row: dict[str, Any], temperature: float, composition_items: tuple[tuple[str, float], ...]) -> dict[str, Any]:
+    composition = {comp: row[comp] for comp in PUBLIC_COMPONENT_COLUMNS}
+    match_score = 100.0
+    user_components = dict(composition_items)
+    for comp in PUBLIC_COMPONENT_COLUMNS:
+        diff = abs(user_components.get(comp, 0.0) - float(row[comp]))
+        if diff > 0.001:
+            match_score -= diff * 100
+    temp_diff = abs(float(row["temperature"]) - temperature)
+    match_score -= temp_diff * 2
+    match_score = max(0, min(100, round(match_score)))
+    return {
+        "success": True,
+        "data": {
+            "temperature": row["temperature"],
+            "pressure": row["pressure"],
+            "match_score": match_score,
+            "composition": composition,
+        },
+    }
+
+
+def _pick_best_hydrate_row(rows: list[dict[str, Any]], temperature: float, composition_items: tuple[tuple[str, float], ...]) -> Optional[dict[str, Any]]:
+    if not rows:
+        return None
+    best_row = None
+    best_key = None
+    user_components = dict(composition_items)
+    for row in rows:
+        temp_diff = abs(float(row["temperature"]) - temperature)
+        total_diff = sum(abs(user_components.get(comp, 0.0) - float(row[comp])) for comp in PUBLIC_COMPONENT_COLUMNS)
+        sort_key = (total_diff, temp_diff, float(row["pressure"]))
+        if best_key is None or sort_key < best_key:
+            best_key = sort_key
+            best_row = row
+    return best_row
+
+
+@cached(ttl=PUBLIC_METADATA_CACHE_TTL, key_prefix="public-available")
+def _cached_available_components(selected: tuple[str, ...]) -> dict[str, Any]:
+    with get_connection(dict_cursor=True) as conn:
+        cursor = conn.cursor()
+        conditions = [f"{comp} > 0" for comp in selected]
+        where_clause = " AND ".join(conditions) if conditions else "1=1"
+        select_cols = ["COUNT(*) as match_count"]
+        select_cols.extend(
+            [f"SUM(CASE WHEN {comp} > 0 THEN 1 ELSE 0 END) as {comp}_count" for comp in PUBLIC_COMPONENT_COLUMNS]
+        )
+        row = _execute_fetchone(
+            cursor,
+            f"SELECT {', '.join(select_cols)} FROM gas_mixture WHERE {where_clause}",
+            label="public_available_components",
+            context={"selected": ",".join(selected) or "all"},
+        )
+        match_count = row["match_count"] if row else 0
+        available = []
+        for comp in PUBLIC_COMPONENT_COLUMNS:
+            if comp in selected:
+                continue
+            if row and (row.get(f"{comp}_count") or 0) > 0:
+                available.append(comp)
+        return {
+            "success": True,
+            "available": available,
+            "match_count": match_count,
+        }
+
+
+@cached(ttl=PUBLIC_METADATA_CACHE_TTL, key_prefix="public-ranges")
+def _cached_component_ranges(components: tuple[str, ...]) -> dict[str, Any]:
+    with get_connection(dict_cursor=True) as conn:
+        cursor = conn.cursor()
+        conditions = [f"{comp} > 0" for comp in components]
+        conditions.extend([f"{comp} <= 0.02" for comp in PUBLIC_COMPONENT_COLUMNS if comp not in components])
+        where_clause = " AND ".join(conditions) if conditions else "1=1"
+        select_cols = ["COUNT(*) as total_records", "MIN(temperature) as min_temp", "MAX(temperature) as max_temp"]
+        select_cols.extend([f"MIN({c}) as {c}_min, MAX({c}) as {c}_max" for c in PUBLIC_COMPONENT_COLUMNS])
+        row = _execute_fetchone(
+            cursor,
+            f"SELECT {', '.join(select_cols)} FROM gas_mixture WHERE {where_clause}",
+            label="public_component_ranges",
+            context={"components": ",".join(components) or "all"},
+        )
+        total_records = row["total_records"] if row else 0
+        ranges = {}
+        if row:
+            for comp in components:
+                min_val = row.get(f"{comp}_min")
+                max_val = row.get(f"{comp}_max")
+                if min_val is not None:
+                    ranges[comp] = {"min": min_val, "max": max_val}
+        temp_range = None
+        if row and row.get("min_temp") is not None:
+            temp_range = {"min": row["min_temp"], "max": row["max_temp"]}
+        return {
+            "success": True,
+            "ranges": ranges,
+            "total_records": total_records,
+            "temp_range": temp_range,
+        }
+
+
+@cached(ttl=PUBLIC_QUERY_CACHE_TTL, key_prefix="public-by-components")
+def _cached_query_by_components(components: tuple[str, ...], temperature: float) -> dict[str, Any]:
+    with get_connection(dict_cursor=True) as conn:
+        cursor = conn.cursor()
+        rows = _fetch_component_candidate_rows(cursor, list(components), temperature - QUERY_TEMPERATURE_WINDOW, temperature + QUERY_TEMPERATURE_WINDOW)
+    row = _pick_nearest_row(rows, temperature)
+    if not row:
+        return {
+            "success": False,
+            "message": "当前组分组合在目标温度附近没有实验数据，建议尝试相邻温度或重新选择组分。",
+        }
+
+    composition = {comp: row[comp] for comp in PUBLIC_COMPONENT_COLUMNS}
+    return {
+        "success": True,
+        "data": {
+            "temperature": row["temperature"],
+            "pressure": row["pressure"],
+            "composition": composition,
+        },
+    }
+
+
+@cached(ttl=PUBLIC_QUERY_CACHE_TTL, key_prefix="public-batch")
+def _cached_batch_query(components: tuple[str, ...], temperatures: tuple[float, ...]) -> dict[str, Any]:
+    results: list[dict[str, Any]] = []
+    valid_temperatures: list[float] = []
+    for temp in temperatures:
+        if temp < 100 or temp > 400:
+            results.append(
+                {
+                    "temperature": temp,
+                    "success": False,
+                    "status": "invalid",
+                    "message": "温度超出可查询范围（100-400 K）",
+                }
+            )
+        else:
+            valid_temperatures.append(temp)
+
+    rows: list[dict[str, Any]] = []
+    if valid_temperatures:
+        with get_connection(dict_cursor=True) as conn:
+            cursor = conn.cursor()
+            rows = _fetch_component_candidate_rows(
+                cursor,
+                list(components),
+                min(valid_temperatures) - QUERY_TEMPERATURE_WINDOW,
+                max(valid_temperatures) + QUERY_TEMPERATURE_WINDOW,
+            )
+
+    result_map: dict[float, dict[str, Any]] = {}
+    for temp in valid_temperatures:
+        row = _pick_nearest_row(rows, temp)
+        if row:
+            result_map[temp] = {
+                "temperature": temp,
+                "success": True,
+                "status": "success",
+                "pressure": row["pressure"],
+                "matched_temperature": row["temperature"],
+                "message": "匹配成功",
+            }
+        else:
+            result_map[temp] = {
+                "temperature": temp,
+                "success": False,
+                "status": "no-data",
+                "message": "该温度附近没有匹配到实验数据",
+            }
+
+    ordered_results = []
+    for temp in temperatures:
+        if temp in result_map:
+            ordered_results.append(result_map[temp])
+        else:
+            ordered_results.append(
+                {
+                    "temperature": temp,
+                    "success": False,
+                    "status": "invalid",
+                    "message": "温度超出可查询范围（100-400 K）",
+                }
+            )
+
+    return {"success": True, "data": {"results": ordered_results}}
+
+
+def _build_range_conditions_and_params(components: List[str], ranges: dict, *, tolerance: float = 0.02) -> tuple[list[str], list[float]]:
+    conditions: list[str] = []
+    params: list[float] = []
+    for comp in PUBLIC_COMPONENT_COLUMNS:
+        if comp in components:
+            min_val, max_val = _get_range_pair(ranges, comp)
+            conditions.append(f"{comp} BETWEEN ? AND ?")
+            params.extend([min_val, max_val])
+        else:
+            conditions.append(f"{comp} <= ?")
+            params.append(tolerance)
+    return conditions, params
+
+
+@cached(ttl=PUBLIC_QUERY_CACHE_TTL, key_prefix="public-range")
+def _cached_range_query(components: tuple[str, ...], normalized_ranges: tuple[tuple[str, float, float], ...], temperature: float) -> dict[str, Any]:
+    ranges = {comp: {"min": min_val, "max": max_val} for comp, min_val, max_val in normalized_ranges}
+    with get_connection(dict_cursor=True) as conn:
+        cursor = conn.cursor()
+        conditions, params = _build_range_conditions_and_params(list(components), ranges)
+        conditions.append("temperature BETWEEN ? AND ?")
+        params.extend([temperature - QUERY_TEMPERATURE_WINDOW, temperature + QUERY_TEMPERATURE_WINDOW])
+        query = f"""
+            SELECT temperature, pressure
+            FROM gas_mixture
+            WHERE {' AND '.join(conditions)}
+            ORDER BY temperature ASC, pressure ASC
+        """
+        rows = _execute_fetchall(
+            cursor,
+            query,
+            params,
+            label="public_range_query",
+            context={"components": ",".join(components), "temperature": temperature},
+        )
+    row = _pick_nearest_row(rows, temperature)
+    if not row:
+        return {
+            "success": False,
+            "message": "指定组分区间在目标温度附近没有实验数据，请适当放宽区间或调整温度。",
+        }
+    return {
+        "success": True,
+        "data": {
+            "temperature": row["temperature"],
+            "pressure": row["pressure"],
+        },
+    }
+
+
+@cached(ttl=PUBLIC_QUERY_CACHE_TTL, key_prefix="public-match-count")
+def _cached_match_count(components: tuple[str, ...], normalized_ranges: tuple[tuple[str, float, float], ...]) -> dict[str, Any]:
+    ranges = {comp: {"min": min_val, "max": max_val} for comp, min_val, max_val in normalized_ranges}
+    with get_connection(dict_cursor=True) as conn:
+        cursor = conn.cursor()
+        conditions, params = _build_range_conditions_and_params(list(components), ranges)
+        row = _execute_fetchone(
+            cursor,
+            f"SELECT COUNT(*) as count FROM gas_mixture WHERE {' AND '.join(conditions)}",
+            params,
+            label="public_match_count",
+            context={"components": ",".join(components)},
+        )
+    count = row["count"] if row else 0
+    if count == 0:
+        display = "0"
+    elif count < 10:
+        display = "<10"
+    elif count < 100:
+        display = "10+"
+    else:
+        display = "100+"
+    return {"success": True, "count": count, "display": display}
+
+
+@cached(ttl=PUBLIC_QUERY_CACHE_TTL, key_prefix="public-hydrate")
+def _cached_hydrate_query(composition_items: tuple[tuple[str, float], ...], temperature: float, tolerance: float) -> dict[str, Any]:
+    with get_connection(dict_cursor=True) as conn:
+        cursor = conn.cursor()
+        conditions: list[str] = []
+        params: list[float] = []
+        user_components = dict(composition_items)
+        for col in PUBLIC_COMPONENT_COLUMNS:
+            user_val = user_components.get(col, 0.0)
+            if user_val > 0.001:
+                lower = max(0.0, user_val - tolerance)
+                upper = min(1.0, user_val + tolerance)
+                conditions.append(f"{col} BETWEEN ? AND ?")
+                params.extend([lower, upper])
+            else:
+                conditions.append(f"{col} <= ?")
+                params.append(tolerance)
+        conditions.append("temperature BETWEEN ? AND ?")
+        params.extend([temperature - QUERY_TEMPERATURE_WINDOW, temperature + QUERY_TEMPERATURE_WINDOW])
+        query = f"""
+            SELECT temperature, pressure, {', '.join(PUBLIC_COMPONENT_COLUMNS)}
+            FROM gas_mixture
+            WHERE {' AND '.join(conditions)}
+            ORDER BY temperature ASC, pressure ASC
+            LIMIT 300
+        """
+        rows = _execute_fetchall(
+            cursor,
+            query,
+            params,
+            label="public_hydrate_query",
+            context={"temperature": temperature, "tolerance": tolerance},
+        )
+    row = _pick_best_hydrate_row(rows, temperature, composition_items)
+    if not row:
+        return {
+            "success": False,
+            "message": "未找到匹配的实验数据，请尝试放宽容差、调整温度，或检查组分输入是否接近数据库中的实验范围。",
+        }
+    return _build_hydrate_response(row, temperature, composition_items)
 
 
 def _get_range_pair(ranges: dict, comp: str) -> tuple[float, float]:
@@ -1856,40 +2481,10 @@ async def api_available_components(request: AvailableComponentsRequest):
     selected = _validate_component_list(request.selected)
     
     try:
-        with get_connection(dict_cursor=True) as conn:
-            cursor = conn.cursor()
-
-            # 构建查询条件：已选组分必须 > 0
-            conditions = [f"{comp} > 0" for comp in selected]
-            where_clause = " AND ".join(conditions) if conditions else "1=1"
-
-            # 单次聚合查询：匹配数 + 各组分是否可用（避免 N+1 COUNT 查询）
-            select_cols = ["COUNT(*) as match_count"]
-            select_cols.extend(
-                [f"SUM(CASE WHEN {comp} > 0 THEN 1 ELSE 0 END) as {comp}_count" for comp in PUBLIC_COMPONENT_COLUMNS]
-            )
-            cursor.execute(
-                f"SELECT {', '.join(select_cols)} FROM gas_mixture WHERE {where_clause}"
-            )
-            row = cursor.fetchone()
-            match_count = row["match_count"] if row else 0
-
-            available = []
-            for comp in PUBLIC_COMPONENT_COLUMNS:
-                if comp in selected:
-                    continue
-                if row and (row.get(f"{comp}_count") or 0) > 0:
-                    available.append(comp)
-
-            return {
-                "success": True,
-                "available": available,
-                "match_count": match_count
-            }
-        
+        return _cached_available_components(tuple(selected))
     except Exception:
         logger.exception("available components 查询失败")
-        return {"success": False, "message": "查询失败"}
+        return {"success": False, "message": "暂时无法读取可用组分，请稍后重试。"}
 
 
 class ComponentRangesRequest(BaseModel):
@@ -1907,43 +2502,10 @@ async def api_component_ranges(request: ComponentRangesRequest):
     components = _validate_component_list(request.components)
     
     try:
-        with get_connection(dict_cursor=True) as conn:
-            cursor = conn.cursor()
-        
-            # 构建查询条件：已选组分必须 > 0，未选组分必须接近0
-            conditions = [f"{comp} > 0" for comp in components]
-            conditions.extend([f"{comp} <= 0.02" for comp in PUBLIC_COMPONENT_COLUMNS if comp not in components])
-            where_clause = " AND ".join(conditions) if conditions else "1=1"
-
-            # 单次聚合：所有组分 min/max + 温度范围 + 总数
-            select_cols = ["COUNT(*) as total_records", "MIN(temperature) as min_temp", "MAX(temperature) as max_temp"]
-            select_cols.extend([f"MIN({c}) as {c}_min, MAX({c}) as {c}_max" for c in PUBLIC_COMPONENT_COLUMNS])
-            cursor.execute(f"SELECT {', '.join(select_cols)} FROM gas_mixture WHERE {where_clause}")
-            row = cursor.fetchone()
-
-            total_records = row["total_records"] if row else 0
-            ranges = {}
-            if row:
-                for comp in components:
-                    min_val = row.get(f"{comp}_min")
-                    max_val = row.get(f"{comp}_max")
-                    if min_val is not None:
-                        ranges[comp] = {"min": min_val, "max": max_val}
-
-            temp_range = None
-            if row and row.get("min_temp") is not None:
-                temp_range = {"min": row["min_temp"], "max": row["max_temp"]}
-
-            return {
-                "success": True,
-                "ranges": ranges,
-                "total_records": total_records,
-                "temp_range": temp_range
-            }
-        
+        return _cached_component_ranges(tuple(components))
     except Exception:
         logger.exception("component ranges 查询失败")
-        return {"success": False, "message": "查询失败"}
+        return {"success": False, "message": "暂时无法读取组分区间，请稍后重试。"}
 
 
 class QueryByComponentsRequest(BaseModel):
@@ -1965,34 +2527,15 @@ async def api_query_by_components(request: QueryByComponentsRequest):
     根据组分组合和温度查询相平衡压力
     """
     components = _validate_component_list(request.components)
-    temperature = request.temperature
+    temperature = _normalize_temperature(request.temperature)
+    if temperature < 100 or temperature > 400:
+        return {"success": False, "message": "查询温度需位于 100-400 K 之间。"}
 
     try:
-        with get_connection(dict_cursor=True) as conn:
-            cursor = conn.cursor()
-            row = _query_by_components_with_cursor(cursor, components, temperature)
-
-            if row:
-                composition = {}
-                for comp in PUBLIC_COMPONENT_COLUMNS:
-                    composition[comp] = row[comp]
-
-                return {
-                    "success": True,
-                    "data": {
-                        "temperature": row['temperature'],
-                        "pressure": row['pressure'],
-                        "composition": composition
-                    }
-                }
-            return {
-                "success": False,
-                "message": "在指定的温度范围内未找到数据"
-            }
-            
+        return _cached_query_by_components(tuple(components), temperature)
     except Exception:
         logger.exception("query by components 查询失败")
-        return {"success": False, "message": "查询失败"}
+        return {"success": False, "message": "查询服务暂时不可用，请稍后重试。"}
 
 
 # 端点：POST /api/query/batch
@@ -2005,7 +2548,7 @@ async def api_batch_query(request: BatchQueryRequest):
     批量查询相平衡压力
     """
     components = _validate_component_list(request.components)
-    temperatures = request.temperatures or []
+    temperatures = tuple(_normalize_temperature(temp) for temp in (request.temperatures or []))
 
     if not temperatures:
         return {"success": False, "message": "未提供温度列表", "data": {"results": []}}
@@ -2015,42 +2558,11 @@ async def api_batch_query(request: BatchQueryRequest):
             "message": f"批量查询最多支持 {BATCH_QUERY_LIMIT} 条温度",
             "data": {"results": []},
         }
-
-    results = []
     try:
-        with get_connection(dict_cursor=True) as conn:
-            cursor = conn.cursor()
-            for temp in temperatures:
-                if temp < 100 or temp > 400:
-                    results.append({
-                        "temperature": temp,
-                        "success": False,
-                        "status": "invalid",
-                        "message": "温度超出范围(100-400K)",
-                    })
-                    continue
-
-                row = _query_by_components_with_cursor(cursor, components, temp)
-                if row:
-                    results.append({
-                        "temperature": temp,
-                        "success": True,
-                        "status": "success",
-                        "pressure": row["pressure"],
-                        "matched_temperature": row["temperature"],
-                    })
-                else:
-                    results.append({
-                        "temperature": temp,
-                        "success": False,
-                        "status": "no-data",
-                        "message": "未找到匹配数据",
-                    })
-
-        return {"success": True, "data": {"results": results}}
+        return _cached_batch_query(tuple(components), temperatures)
     except Exception:
         logger.exception("batch query 查询失败")
-        return {"success": False, "message": "查询失败", "data": {"results": results}}
+        return {"success": False, "message": "批量查询暂时不可用，请稍后重试。", "data": {"results": []}}
 
 
 # 端点：POST /api/query/range
@@ -2064,60 +2576,16 @@ async def api_range_query(request: RangeQueryRequest):
     """
     components = _validate_component_list(request.components)
     ranges = request.ranges
-    temperature = request.temperature
+    temperature = _normalize_temperature(request.temperature)
+    if temperature < 100 or temperature > 400:
+        return {"success": False, "message": "查询温度需位于 100-400 K 之间。"}
 
     try:
-        with get_connection(dict_cursor=True) as conn:
-            cursor = conn.cursor()
-
-            # 构建查询条件
-            conditions = []
-            params = []
-
-            for comp in PUBLIC_COMPONENT_COLUMNS:
-                if comp in components:
-                    # 已选组分：在范围内
-                    min_val, max_val = _get_range_pair(ranges, comp)
-                    conditions.append(f"({comp} >= ? AND {comp} <= ?)")
-                    params.extend([min_val, max_val])
-                else:
-                    # 未选组分：必须为0或接近0
-                    conditions.append(f"{comp} <= 0.02")
-
-            # 温度范围 ±5K
-            conditions.append("ABS(temperature - ?) <= 5")
-            params.append(temperature)
-
-            where_clause = " AND ".join(conditions)
-
-            query = f"""
-                SELECT temperature, pressure
-                FROM gas_mixture
-                WHERE {where_clause}
-                ORDER BY ABS(temperature - ?)
-                LIMIT 1
-            """
-            params.append(temperature)
-
-            cursor.execute(query, params)
-            row = cursor.fetchone()
-
-            if row:
-                return {
-                    "success": True,
-                    "data": {
-                        "temperature": row['temperature'],
-                        "pressure": row['pressure']
-                    }
-                }
-            return {
-                "success": False,
-                "message": "在指定的组分范围和温度下未找到数据"
-            }
-            
+        normalized_ranges = _normalize_ranges_payload(components, ranges)
+        return _cached_range_query(tuple(components), normalized_ranges, temperature)
     except Exception:
         logger.exception("range query 查询失败")
-        return {"success": False, "message": "查询失败"}
+        return {"success": False, "message": "区间查询暂时不可用，请稍后重试。"}
 
 
 class MatchCountRequest(BaseModel):
@@ -2138,48 +2606,11 @@ async def api_match_count(request: MatchCountRequest):
     ranges = request.ranges
 
     try:
-        with get_connection(dict_cursor=True) as conn:
-            cursor = conn.cursor()
-
-            # 构建查询条件
-            conditions = []
-            params = []
-
-            for comp in PUBLIC_COMPONENT_COLUMNS:
-                if comp in components:
-                    # 已选组分：在范围内
-                    min_val, max_val = _get_range_pair(ranges, comp)
-                    conditions.append(f"({comp} >= ? AND {comp} <= ?)")
-                    params.extend([min_val, max_val])
-                else:
-                    # 未选组分：必须为0或接近0
-                    conditions.append(f"{comp} <= 0.02")
-
-            where_clause = " AND ".join(conditions)
-
-            cursor.execute(f"SELECT COUNT(*) as count FROM gas_mixture WHERE {where_clause}", params)
-            row = cursor.fetchone()
-            count = row['count'] if row else 0
-
-            # 返回模糊数量
-            if count == 0:
-                display = "0"
-            elif count < 10:
-                display = "<10"
-            elif count < 100:
-                display = "10+"
-            else:
-                display = "100+"
-
-            return {
-                "success": True,
-                "count": count,
-                "display": display
-            }
-        
+        normalized_ranges = _normalize_ranges_payload(components, ranges)
+        return _cached_match_count(tuple(components), normalized_ranges)
     except Exception:
         logger.exception("match count 查询失败")
-        return {"success": False, "message": "查询失败", "count": 0, "display": "0"}
+        return {"success": False, "message": "暂时无法估算匹配数量，请稍后重试。", "count": 0, "display": "0"}
 
 
 class HydrateQueryRequest(BaseModel):
@@ -2199,82 +2630,24 @@ async def api_hydrate_query(request: HydrateQueryRequest):
     - 查找最匹配的实验数据点
     - 返回相平衡压力
     """
-    components = request.components
-    temperature = request.temperature
-    tolerance = request.tolerance
-    
-    # 组分列表
-    comp_cols = ['x_ch4', 'x_c2h6', 'x_c3h8', 'x_co2', 'x_n2', 'x_h2s', 'x_ic4h10']
-    
+    components = request.components if isinstance(request.components, dict) else {}
+    temperature = _normalize_temperature(request.temperature)
+    tolerance = _normalize_float(request.tolerance, 4)
+    if temperature < 100 or temperature > 400:
+        return {"success": False, "message": "查询温度需位于 100-400 K 之间。"}
+    if tolerance <= 0 or tolerance > 0.2:
+        return {"success": False, "message": "容差需位于 0-0.2 之间，建议使用 0.01-0.05。"}
     try:
-        with get_connection(dict_cursor=True) as conn:
-            cursor = conn.cursor()
-
-            # 构建查询 - 先按组分筛选，再按温度排序
-            conditions = []
-            params = []
-
-            for col in comp_cols:
-                user_val = components.get(col, 0)
-                if user_val > 0.001:  # 用户输入了该组分
-                    # 允许一定容差
-                    conditions.append(f"ABS({col} - ?) <= ?")
-                    params.extend([user_val, tolerance])
-                else:
-                    # 用户没输入该组分，要求数据库中也接近0
-                    conditions.append(f"{col} <= ?")
-                    params.append(tolerance)
-
-            # 温度筛选 - 允许±5K范围
-            conditions.append("ABS(temperature - ?) <= 5")
-            params.append(temperature)
-
-            where_clause = " AND ".join(conditions)
-
-            # 查询并计算匹配度
-            query = f"""
-                SELECT temperature, pressure, x_ch4, x_c2h6, x_c3h8, x_co2, x_n2, x_h2s, x_ic4h10
-                FROM gas_mixture
-                WHERE {where_clause}
-                ORDER BY ABS(temperature - ?)
-                LIMIT 1
-            """
-            params.append(temperature)
-
-            cursor.execute(query, params)
-            row = cursor.fetchone()
-
-            if row:
-                # 计算匹配度分数
-                match_score = 100
-                for col in comp_cols:
-                    user_val = components.get(col, 0)
-                    db_val = row[col]
-                    diff = abs(user_val - db_val)
-                    if diff > 0.001:
-                        match_score -= diff * 100  # 每1%差异扣1分
-
-                temp_diff = abs(row['temperature'] - temperature)
-                match_score -= temp_diff * 2  # 每1K温差扣2分
-
-                match_score = max(0, min(100, round(match_score)))
-
-                return {
-                    "success": True,
-                    "data": {
-                        "temperature": row['temperature'],
-                        "pressure": row['pressure'],
-                        "match_score": match_score
-                    }
-                }
-            return {
-                "success": False,
-                "message": "未找到匹配的实验数据，请调整组分或温度"
-            }
-            
+        composition_items = _normalize_hydrate_components(components)
+        total_fraction = sum(value for _, value in composition_items)
+        if total_fraction <= 0:
+            return {"success": False, "message": "请至少输入一个大于 0 的组分摩尔分数。"}
+        if total_fraction > 1.05:
+            return {"success": False, "message": "组分摩尔分数之和超过 1，请检查输入值。"}
+        return _cached_hydrate_query(composition_items, temperature, tolerance)
     except Exception:
         logger.exception("hydrate query 查询失败")
-        return {"success": False, "message": "查询失败"}
+        return {"success": False, "message": "相平衡查询暂时不可用，请稍后重试。"}
 
 
 # ==================== 数据模板 API ====================
@@ -2471,10 +2844,13 @@ async def startup_event():
     # 初始化缓存
     logger.info("[App] 正在初始化缓存系统...")
     cache = init_cache()
+    cache_stats = cache.get_stats()
     if cache.is_connected():
-        logger.info("[Cache] Redis缓存已连接")
+        logger.info("[Cache] Redis缓存已连接，后端模式=%s", cache_stats.get("backend"))
+    elif cache.is_available():
+        logger.info("[Cache] Redis不可用，已启用本地内存缓存兜底")
     else:
-        logger.warning("[Cache] Redis未连接或已禁用，缓存功能不可用")
+        logger.warning("[Cache] Redis未连接且缓存已禁用")
     
     logger.info("[App] 系统启动完成 v4.0")
 
